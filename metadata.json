@@ -1,0 +1,6 @@
+{
+  "name": "Mallorca Agents CRM",
+  "description": "Luxury property CRM and AI-driven automated client procurement dashboard for MallorcaAgents.com.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
