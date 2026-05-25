@@ -49,6 +49,8 @@ export interface Lead {
   nextFollowUpDate: string;
   propertyInterestIds: string[];
   socialHandle?: string;
+  socialEngagementScore?: number;
+  lastActive?: string;
   timeline: TimelineEvent[];
 }
 

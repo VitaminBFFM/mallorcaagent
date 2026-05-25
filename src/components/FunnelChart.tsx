@@ -317,14 +317,14 @@ export default function FunnelChart({ leads, onSelectLead }: FunnelChartProps) {
                   const startY = idx * (segmentHeight + segmentGap);
                   const endY = startY + segmentHeight;
 
-                  // Define outer coordinates (trapezoid corners centered about X=250)
                   const basePercentage = valueToScale / maxCount;
                   // Guard against zero elements to maintain a thin visual trace line
-                  const factor = Math.max(basePercentage, 0.08); 
+                  const factor = Math.max(basePercentage, 0.22); 
                   
+                  const SCALE_WIDTH = 170;
                   // Interpolated width at top and bottom of segment to create smooth neck-down
-                  const topWidth = 400 * (idx === 0 ? 1 : Math.max(funnelData[idx - 1][funnelMode === 'cumulative' ? 'cumulativeCount' : 'count'] / maxCount, 0.08));
-                  const bottomWidth = 400 * factor;
+                  const topWidth = SCALE_WIDTH * (idx === 0 ? 1 : Math.max(funnelData[idx - 1][funnelMode === 'cumulative' ? 'cumulativeCount' : 'count'] / maxCount, 0.22));
+                  const bottomWidth = SCALE_WIDTH * factor;
                   
                   // Compute left and right margins center anchored on X=250
                   const x1 = 250 - topWidth / 2;
@@ -349,7 +349,7 @@ export default function FunnelChart({ leads, onSelectLead }: FunnelChartProps) {
                       {/* Connection liquid flow shadow beneath path */}
                       {idx < funnelData.length - 1 && funnelMode === 'cumulative' && (
                         <path
-                          d={`M ${x4} ${endY} L ${x3} ${endY} L ${250 + (400 * Math.max(funnelData[idx+1].cumulativeCount / maxCount, 0.04)) / 2} ${endY + segmentGap} L ${250 - (400 * Math.max(funnelData[idx+1].cumulativeCount / maxCount, 0.04)) / 2} ${endY + segmentGap} Z`}
+                          d={`M ${x4} ${endY} L ${x3} ${endY} L ${250 + (SCALE_WIDTH * Math.max(funnelData[idx+1].cumulativeCount / maxCount, 0.22)) / 2} ${endY + segmentGap} L ${250 - (SCALE_WIDTH * Math.max(funnelData[idx+1].cumulativeCount / maxCount, 0.22)) / 2} ${endY + segmentGap} Z`}
                           fill="url(#flowGradient)"
                           opacity="0.12"
                         />
@@ -366,9 +366,9 @@ export default function FunnelChart({ leads, onSelectLead }: FunnelChartProps) {
 
                       {/* Inner stage level visual bars indicator */}
                       <line 
-                        x1={x1 + 6}
+                        x1={(x1 + x4) / 2 + 10}
                         y1={startY + segmentHeight / 2}
-                        x2={x2 - 6}
+                        x2={(x2 + x3) / 2 - 10}
                         y2={startY + segmentHeight / 2}
                         stroke={isHovered || isSelected ? '#ffffff' : '#404040'}
                         strokeWidth="1"
@@ -376,65 +376,59 @@ export default function FunnelChart({ leads, onSelectLead }: FunnelChartProps) {
                         opacity={idx === 4 ? 0 : 0.4}
                       />
 
-                      {/* Stage core description inside the SVG slice */}
-                      <text
-                        x="250"
-                        y={startY + segmentHeight / 2 - 2}
-                        textAnchor="middle"
-                        className={`text-[10px] uppercase font-mono tracking-widest leading-none font-bold select-none transition-all duration-200 fill-white`}
-                      >
-                        {stage.stage === 'Showing Scheduled' ? 'SHOWING' : stage.stage.toUpperCase()}
-                      </text>
-
-                      {/* Segment metric counter value text (centered coordinate) */}
-                      <text
-                        x="250"
-                        y={startY + segmentHeight / 2 + 12}
-                        textAnchor="middle"
-                        className={`text-[9px] font-mono leading-none font-bold select-none transition-all duration-200 ${
-                          isSelected ? 'fill-[#c5a059]' : 'fill-neutral-400'
-                        }`}
-                      >
-                        {funnelMode === 'cumulative'
-                          ? `REACHED: ${stage.cumulativeCount} (${stage.cumulativePercentage}%)`
-                          : `IN STAGE: ${stage.count} (Val: €${(stage.leadsInStage.reduce((s, x) => s + x.budget, 0)/1000000).toFixed(1)}M)`
-                        }
-                      </text>
-
-                      {/* Left side: conversion rates or indicators */}
-                      {idx > 0 && funnelMode === 'cumulative' && (
-                        <g transform={`translate(${Math.min(x1, x4) - 38}, ${startY + 15})`} className="select-none">
-                          <rect 
-                            x="0" 
-                            y="0" 
-                            width="28" 
-                            height="16" 
-                            rx="4" 
-                            fill={stage.dropOffRate > 40 ? '#ef4444/10' : '#171717'} 
-                            stroke={stage.dropOffRate > 40 ? '#ef4444/30' : '#262626'} 
-                            strokeWidth="1" 
-                          />
-                          <text 
-                            x="14" 
-                            y="11" 
-                            textAnchor="middle" 
-                            className={`text-[8px] font-mono font-bold ${
-                              stage.dropOffRate > 40 ? 'fill-red-400' : 'fill-[#c5a059]'
-                            }`}
-                          >
-                            -{stage.dropOffRate}%
-                          </text>
-                        </g>
-                      )}
-
-                      {/* Right side: volume summaries */}
-                      <g transform={`translate(${Math.max(x2, x3) + 12}, ${startY + segmentHeight/2 + 3})`}>
-                        <text 
-                          x="0" 
-                          y="0" 
-                          className="text-[10px] font-mono font-bold fill-[#c5a059] text-left"
+                      {/* Left Side: Stage Name & Metrics (Right-aligned to prevent any overlap with shapes) */}
+                      <g className="select-none transition-all duration-200">
+                        {/* Stage Name */}
+                        <text
+                          x="145"
+                          y={startY + segmentHeight / 2 - 2}
+                          textAnchor="end"
+                          className={`text-[10px] font-mono font-bold tracking-wider uppercase ${
+                            isSelected ? 'fill-[#c5a059]' : isHovered ? 'fill-white' : 'fill-neutral-300'
+                          }`}
                         >
-                          €{( (funnelMode === 'cumulative' ? stage.totalVolume : stage.leadsInStage.reduce((sum, l) => sum + l.budget,0) ) / 1000000).toFixed(1)}M
+                          {stage.stage === 'Showing Scheduled' ? 'SHOWING' : stage.stage.toUpperCase()}
+                        </text>
+                        {/* reached / count metrics */}
+                        <text
+                          x="145"
+                          y={startY + segmentHeight / 2 + 10}
+                          textAnchor="end"
+                          className="text-[9px] font-mono fill-neutral-500 font-semibold"
+                        >
+                          {funnelMode === 'cumulative'
+                            ? `REACHED: ${stage.cumulativeCount} (${stage.cumulativePercentage}%)`
+                            : `COUNT: ${stage.count}`
+                          }
+                        </text>
+                      </g>
+
+                      {/* Right Side: Financial Volume & Drop-off Rates (Left-aligned next to funnel) */}
+                      <g className="select-none transition-all duration-200">
+                        {/* Financial Volume */}
+                        <text
+                          x="355"
+                          y={startY + segmentHeight / 2 - 2}
+                          textAnchor="start"
+                          className={`text-xs font-mono font-bold ${
+                            isSelected ? 'fill-[#c5a059]' : 'fill-white'
+                          }`}
+                        >
+                          €{((funnelMode === 'cumulative' ? stage.totalVolume : stage.leadsInStage.reduce((sum, l) => sum + l.budget,0)) / 1000000).toFixed(1)}M
+                        </text>
+                        {/* Drop-off rating or Stage capacity */}
+                        <text
+                          x="355"
+                          y={startY + segmentHeight / 2 + 10}
+                          textAnchor="start"
+                          className={`text-[9px] font-mono font-bold tracking-wider uppercase ${
+                            idx > 0 && funnelMode === 'cumulative' && stage.dropOffRate > 40 ? 'fill-red-400' : 'fill-neutral-500'
+                          }`}
+                        >
+                          {funnelMode === 'cumulative'
+                            ? (idx === 0 ? '✓ ENTRY CONVERSION' : `-${stage.dropOffRate}% DROP-OFF`)
+                            : `${stage.count === 0 ? 'EMPTY' : `${Math.round((stage.count / maxCount) * 100)}% MAX CAP`}`
+                          }
                         </text>
                       </g>
                     </g>
