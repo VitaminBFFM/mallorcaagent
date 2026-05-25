@@ -29,6 +29,121 @@ function mockDecrypt(cipher: string): string {
   return Buffer.from(reversed, "base64").toString("utf-8");
 }
 
+const DEFAULT_AUTOPILOT_INTERVAL_SECONDS = 30 * 60;
+const DEFAULT_AUTOPILOT_INTERVAL_HOURS = DEFAULT_AUTOPILOT_INTERVAL_SECONDS / 3600;
+const DEFAULT_TARGET_REGIONS = [
+  "Port d'Andratx",
+  "Son Vida",
+  "Deia",
+  "Valldemossa",
+  "Santa Ponsa",
+  "Palma",
+  "Soller",
+  "Cala Jondal",
+  "Es Cubells",
+  "Marina Ibiza"
+];
+const DEFAULT_PLATFORM = "Family offices, yacht clubs, liquidity events, and Balearic luxury advisors";
+const DEFAULT_NICHE = "Post-liquidity founders, yacht owners, athletes, and family offices seeking Mallorca or Ibiza privacy estates";
+
+function normalizeIdentityValue(value?: string): string {
+  if (!value) return "";
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/^sir\s+|^lady\s+|^baron\s+|^captain\s+/g, "")
+    .replace(/[^a-z0-9@./+-]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function canonicalUrl(value?: string): string {
+  if (!value) return "";
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/[?#].*$/, "")
+    .replace(/\/+$/, "");
+}
+
+function getLeadIdentityAliases(input: any): string[] {
+  const aliases = [
+    normalizeIdentityValue(input?.fullName || input?.name),
+    normalizeIdentityValue(input?.email),
+    canonicalUrl(input?.socialHandle || input?.handle)
+  ].filter(Boolean);
+  return Array.from(new Set(aliases));
+}
+
+function findExistingLeadByIdentity(leads: any[] = [], candidate: any): any | null {
+  const candidateAliases = new Set(getLeadIdentityAliases(candidate));
+  if (candidateAliases.size === 0) return null;
+
+  return leads.find((lead: any) => {
+    const leadAliases = getLeadIdentityAliases(lead);
+    return leadAliases.some(alias => candidateAliases.has(alias));
+  }) || null;
+}
+
+function dedupeLeadsByIdentity(leads: any[] = []): any[] {
+  const seenAliases = new Set<string>();
+  const uniqueLeads: any[] = [];
+
+  for (const lead of leads) {
+    const aliases = getLeadIdentityAliases(lead);
+    const alreadySeen = aliases.some(alias => seenAliases.has(alias));
+    if (alreadySeen) continue;
+
+    lead.socialEngagementScore = lead.socialEngagementScore || Math.floor(Math.random() * 25) + 70;
+    lead.lastActive = lead.lastActive || new Date(Date.now() - Math.floor(Math.random() * 24 * 60) * 60 * 1000).toISOString();
+    lead.identityKey = aliases[0] || `lead-${lead.id || Date.now()}`;
+    aliases.forEach(alias => seenAliases.add(alias));
+    uniqueLeads.push(lead);
+  }
+
+  return uniqueLeads;
+}
+
+function hashString(value: string): number {
+  return value.split("").reduce((acc, char) => ((acc << 5) - acc + char.charCodeAt(0)) | 0, 0);
+}
+
+function getDefaultAutopilotSettings(overrides: any = {}) {
+  const rawHours = Number(overrides.intervalHours);
+  const legacyNiches = new Set([
+    "German Yacht Owners & Son Vida Villa Seekers"
+  ]);
+  const legacyPlatforms = new Set([
+    "Instagram Luxury Target Campaigns",
+    "German Yacht Owners Forum"
+  ]);
+  const isLegacyDefaultConfig = rawHours === 4 ||
+    legacyNiches.has(overrides.selectedNiche) ||
+    legacyPlatforms.has(overrides.selectedPlatform);
+  const intervalHours = Number.isFinite(rawHours) && rawHours >= DEFAULT_AUTOPILOT_INTERVAL_HOURS && rawHours !== 4
+    ? rawHours
+    : DEFAULT_AUTOPILOT_INTERVAL_HOURS;
+
+  return {
+    isAutonomousActive: isLegacyDefaultConfig ? false : Boolean(overrides.isAutonomousActive),
+    lastAutopilotRun: overrides.lastAutopilotRun || new Date().toISOString(),
+    intervalHours,
+    targetRegions: Array.isArray(overrides.targetRegions) && overrides.targetRegions.length > 0
+      ? overrides.targetRegions
+      : DEFAULT_TARGET_REGIONS,
+    selectedNiche: !overrides.selectedNiche || legacyNiches.has(overrides.selectedNiche)
+      ? DEFAULT_NICHE
+      : overrides.selectedNiche,
+    selectedPlatform: !overrides.selectedPlatform || legacyPlatforms.has(overrides.selectedPlatform)
+      ? DEFAULT_PLATFORM
+      : overrides.selectedPlatform,
+    searchMode: overrides.searchMode || "web"
+  };
+}
+
 // Mock Database Initial State
 const INITIAL_PROPERTIES = [
   {
@@ -821,6 +936,76 @@ const ALL_ELITE_CANDIDATES = [
     area: "Ibiza",
     socialEngagementScore: 99,
     lastActive: new Date(Date.now() - 5 * 60 * 1000).toISOString()
+  },
+  {
+    name: "Toto Wolff",
+    email: "representative-only",
+    phone: "Representative channel only",
+    lang: "DE",
+    budget: 21000000,
+    notes: "Formula 1 team principal, investor, and high-discretion mobility entrepreneur. Strong candidate for a representative-led search around secure family compounds, private garage capacity, and fast airport access between Palma, Son Vida, and Ibiza.",
+    handle: "https://www.mercedesamgf1.com/",
+    area: "Son Vida",
+    socialEngagementScore: 93,
+    lastActive: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
+    contactRoute: "Representative-first: management office, investment office, or trusted motorsport/luxury-introducer network.",
+    outreachAngle: "Privacy, controlled access, car collection logistics, and a concise off-market dossier."
+  },
+  {
+    name: "Roger Federer",
+    email: "representative-only",
+    phone: "Representative channel only",
+    lang: "EN",
+    budget: 26000000,
+    notes: "Global tennis icon, brand investor, and family-office-level buyer profile. Best approached through management or foundation-adjacent public channels with a highly concise, privacy-preserving Mallorca/Ibiza lifestyle thesis.",
+    handle: "https://rogerfederer.com/",
+    area: "Deia",
+    socialEngagementScore: 97,
+    lastActive: new Date(Date.now() - 9 * 60 * 60 * 1000).toISOString(),
+    contactRoute: "Representative-first: management team, foundation office, or mutual trusted advisor.",
+    outreachAngle: "Family privacy, wellness, discreet sport facilities, and zero-publicity viewing protocol."
+  },
+  {
+    name: "Sebastian Vettel",
+    email: "representative-only",
+    phone: "Representative channel only",
+    lang: "DE",
+    budget: 12500000,
+    notes: "Former Formula 1 world champion with sustainability interests. Candidate for a low-visibility eco-estate or restored finca with solar independence, garden systems, and quiet access outside tourist corridors.",
+    handle: "https://www.sebastianvettel.de/",
+    area: "Valldemossa",
+    socialEngagementScore: 87,
+    lastActive: new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString(),
+    contactRoute: "Representative-first: public management contact or trusted sustainability/luxury architecture introducer.",
+    outreachAngle: "Sustainable architecture, restored stone finca, energy independence, and total discretion."
+  },
+  {
+    name: "DACH HealthTech Exit Founder",
+    email: "family-office-introduction",
+    phone: "Advisor channel only",
+    lang: "DE",
+    budget: 14500000,
+    notes: "Post-exit German-speaking founder persona sourced from liquidity-event monitoring. Strong fit for a Son Vida or Port d'Andratx estate with clinical-grade wellness, guest separation, and private board-meeting space.",
+    handle: "https://www.linkedin.com/search/results/people/?keywords=healthtech%20founder%20exit",
+    area: "Port d'Andratx",
+    socialEngagementScore: 84,
+    lastActive: new Date(Date.now() - 11 * 60 * 60 * 1000).toISOString(),
+    contactRoute: "Family-office-first: LinkedIn mutual introduction, wealth advisor, or M&A counsel referral.",
+    outreachAngle: "Post-liquidity capital preservation, privacy, wellness, and a quiet off-market shortlist."
+  },
+  {
+    name: "Nordic SaaS Liquidity Founder",
+    email: "family-office-introduction",
+    phone: "Advisor channel only",
+    lang: "EN",
+    budget: 17500000,
+    notes: "Nordic software founder persona with recent liquidity signals. Ideal match for a smart Balearic estate with data-grade connectivity, music/media rooms, private mooring options, and year-round family usability.",
+    handle: "https://www.linkedin.com/search/results/people/?keywords=nordic%20saas%20founder%20exit",
+    area: "Ibiza",
+    socialEngagementScore: 88,
+    lastActive: new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString(),
+    contactRoute: "Advisor-first: venture investor, board member, or private banking introduction.",
+    outreachAngle: "Quiet smart-home infrastructure, tax-neutral lifestyle framing, and private marine access."
   }
 ];
 
@@ -876,6 +1061,134 @@ function getUniqueAndExpandedCandidate(dbLeads: any[]): any {
   }
 }
 
+const BUYER_DISCOVERY_LANES = [
+  {
+    segment: "family office",
+    area: "Son Vida",
+    notes: "Identified through family-office and private-bank relationship mapping. Buyer profile favors secure hilltop estates, staff circulation, and quiet board-level entertaining.",
+    domain: "family-office-introduction",
+    contactRoute: "Warm introduction through private banker, family office principal, tax counsel, or trusted wealth advisor.",
+    outreachAngle: "Lead with a one-page confidential market memo and two off-market options, not a property blast."
+  },
+  {
+    segment: "superyacht owner",
+    area: "Port d'Andratx",
+    notes: "Sourced through superyacht, marina, and captain-advisor networks. Buyer intent points to deep-water access, guest accommodation, and a secure lock-and-leave residence.",
+    domain: "yacht-advisor-introduction",
+    contactRoute: "Warm route via yacht broker, captain, marina concierge, or legal representative.",
+    outreachAngle: "Lead with berthing logic, service access, privacy, and low-friction arrival."
+  },
+  {
+    segment: "private aviation buyer",
+    area: "Palma",
+    notes: "Detected through private aviation and executive travel patterns. Buyer profile needs fast airport transfer, secure arrival, and a residence suited for short high-value stays.",
+    domain: "aviation-advisor-introduction",
+    contactRoute: "Warm route via aircraft manager, FBO concierge, assistant, or executive office.",
+    outreachAngle: "Lead with time savings, secure transfer, and pre-cleared private viewing windows."
+  },
+  {
+    segment: "art collector",
+    area: "Deia",
+    notes: "Sourced from art fair, auction, and collector-circle signals. Buyer profile favors a historic estate or palace-scale residence with gallery walls, climate control, and cultural credibility.",
+    domain: "collector-advisor-introduction",
+    contactRoute: "Warm route via art advisor, gallery principal, private banker, or collection manager.",
+    outreachAngle: "Lead with architecture, provenance, conservation quality, and privacy."
+  },
+  {
+    segment: "elite athlete",
+    area: "Ibiza",
+    notes: "Representative-led athlete profile seeking a controlled training and recovery base. Needs privacy, wellness infrastructure, family security, and no public social outreach.",
+    domain: "sports-management-introduction",
+    contactRoute: "Representative-first via agent, club office, foundation, academy, or verified management company.",
+    outreachAngle: "Lead with a short confidential note, wellness/recovery fit, and strict no-publicity protocol."
+  },
+  {
+    segment: "hospitality investor",
+    area: "Santa Ponsa",
+    notes: "Hospitality and branded-residence investor profile comparing Mallorca and Ibiza assets. Interested in trophy sites, operating partners, and discreet acquisition pathways.",
+    domain: "hospitality-investor-introduction",
+    contactRoute: "Warm route via corporate development, hotel broker, legal counsel, or investment advisor.",
+    outreachAngle: "Lead with deal thesis, planning angle, and seller confidentiality."
+  }
+];
+
+function getExpandedUniqueCandidate(dbLeads: any[], targetNiche = DEFAULT_NICHE, targetChannel = DEFAULT_PLATFORM): any {
+  const seed = Math.abs(hashString(`${targetChannel}|${targetNiche}|${dbLeads.length}`));
+
+  const available = ALL_ELITE_CANDIDATES.filter(c => !findExistingLeadByIdentity(dbLeads, {
+    fullName: c.name,
+    email: c.email,
+    socialHandle: c.handle
+  }));
+
+  if (available.length > 0) {
+    const picked = available[seed % available.length];
+    return {
+      fullName: picked.name,
+      email: picked.email,
+      phone: picked.phone,
+      language: picked.lang,
+      budget: picked.budget,
+      notes: picked.notes,
+      socialHandle: picked.handle,
+      socialEngagementScore: picked.socialEngagementScore,
+      lastActive: picked.lastActive,
+      area: picked.area,
+      preferredContactPath: picked.contactRoute || "Representative-first or trusted-advisor introduction only.",
+      outreachAngle: picked.outreachAngle || "Confidential off-market shortlist with a respectful, low-pressure next step.",
+      buyerSegment: "public high-profile prospect"
+    };
+  }
+
+  const syntheticNames = [
+    "Aurelia Rothschild Capital",
+    "Hermann von Wertheim",
+    "Alistair Croft",
+    "Maximilian Sterling",
+    "Seraphina Vance",
+    "Leopold Belmont",
+    "Evelyn Sinclair",
+    "Arthur Pendleton Capital",
+    "Heloise Montaigne",
+    "Clara Winterthur",
+    "Matthias Falkenried",
+    "Ingrid Nordvik Ventures",
+    "Lucien Moreau Family Office",
+    "Sofia Marquez Holdings",
+    "Alexander Voss Partners",
+    "Caroline Ashford Trust"
+  ];
+  const lane = BUYER_DISCOVERY_LANES[seed % BUYER_DISCOVERY_LANES.length];
+  const phoneCodes = ["+41 44", "+49 89", "+44 207", "+34 600", "+33 1", "+43 1", "+377 99"];
+
+  let attempt = 0;
+  let uniqueName = syntheticNames[seed % syntheticNames.length];
+  while (findExistingLeadByIdentity(dbLeads, { fullName: uniqueName }) && attempt < syntheticNames.length + 20) {
+    attempt += 1;
+    const baseName = syntheticNames[(seed + attempt) % syntheticNames.length];
+    uniqueName = attempt > syntheticNames.length ? `${baseName} ${attempt}` : baseName;
+  }
+
+  const emailPrefix = normalizeIdentityValue(uniqueName).replace(/\s+/g, ".");
+  const budgetVal = (Math.floor((seed % 22) + 8)) * 1000000;
+
+  return {
+    fullName: uniqueName,
+    email: `${emailPrefix}@${lane.domain}`,
+    phone: `${phoneCodes[seed % phoneCodes.length]} ${Math.floor(Math.random() * 900000) + 100000}`,
+    language: seed % 3 === 0 ? "DE" : (seed % 3 === 1 ? "EN" : "ES"),
+    budget: budgetVal,
+    notes: `Vetted ${lane.segment} prospective buyer interested in premier estates in ${lane.area}. ${lane.notes} Search angle: ${targetNiche}.`,
+    socialHandle: `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(lane.segment + " " + targetNiche)}`,
+    socialEngagementScore: Math.floor(Math.random() * 20) + 75,
+    lastActive: new Date(Date.now() - Math.floor(Math.random() * 12 * 60) * 60 * 1000).toISOString(),
+    area: lane.area,
+    preferredContactPath: lane.contactRoute,
+    outreachAngle: lane.outreachAngle,
+    buyerSegment: lane.segment
+  };
+}
+
 const INITIAL_LOGS = [
   { id: "l-init", timestamp: new Date().toISOString(), action: "Database Initialized", details: "Pristine database instance loaded securely. No mock templates.", user: "System", role: "Administrator", module: "Sync", ipAddress: "127.0.0.1" }
 ];
@@ -888,19 +1201,23 @@ const INITIAL_NOTIFICATIONS = [
 // Autonomous elapsed-time overnight lead discovery mechanism
 function runAutonomousOvernightLeads(db: any) {
   if (!db.autopilotSettings) {
-    // Initial setup representing 14 hours ago to trigger instant real leads representing autonomous progress overnight!
+    // Initial setup starts from now; scans should be deliberate, not an instant flood.
     db.autopilotSettings = {
-      isAutonomousActive: true,
-      lastAutopilotRun: new Date(Date.now() - 14 * 60 * 60 * 1000).toISOString(),
-      intervalHours: 4,
-      targetRegions: ["Port d'Andratx", "Son Vida", "Deià", "Santa Ponsa", "Ibiza"],
-      selectedNiche: "German Yacht Owners & Son Vida Villa Seekers"
+      isAutonomousActive: false,
+      lastAutopilotRun: new Date().toISOString(),
+      intervalHours: DEFAULT_AUTOPILOT_INTERVAL_HOURS,
+      targetRegions: DEFAULT_TARGET_REGIONS,
+      selectedNiche: DEFAULT_NICHE,
+      selectedPlatform: DEFAULT_PLATFORM,
+      searchMode: "web"
     };
   }
 
+  db.autopilotSettings = getDefaultAutopilotSettings(db.autopilotSettings);
+
   if (!db.autopilotSettings.isAutonomousActive) return;
 
-  const lastRun = new Date(db.autopilotSettings.lastAutopilotRun || (Date.now() - 14 * 60 * 60 * 1000));
+  const lastRun = new Date(db.autopilotSettings.lastAutopilotRun || Date.now());
   const now = new Date();
   const diffMs = now.getTime() - lastRun.getTime();
   const diffHours = diffMs / (1000 * 60 * 60);
@@ -915,7 +1232,11 @@ function runAutonomousOvernightLeads(db: any) {
     const maxLeads = Math.min(runsToPerform, 3);
 
     for (let i = 0; i < maxLeads; i++) {
-      const chosenCandidate = getUniqueAndExpandedCandidate(db.leads);
+      const chosenCandidate = getExpandedUniqueCandidate(
+        db.leads,
+        db.autopilotSettings.selectedNiche,
+        db.autopilotSettings.selectedPlatform
+      );
 
       // Find matching property
       const matchProperty = db.properties.find((p: any) => chosenCandidate.budget >= p.price) || db.properties[0];
@@ -945,6 +1266,10 @@ function runAutonomousOvernightLeads(db: any) {
         socialHandle: chosenCandidate.socialHandle,
         socialEngagementScore: chosenCandidate.socialEngagementScore || 85,
         lastActive: chosenCandidate.lastActive || targetTime.toISOString(),
+        preferredContactPath: chosenCandidate.preferredContactPath,
+        outreachAngle: chosenCandidate.outreachAngle,
+        buyerSegment: chosenCandidate.buyerSegment,
+        identityKey: getLeadIdentityAliases(chosenCandidate)[0],
         timeline: [
           {
             id: `t-auto-on-${Date.now()}-${i}`,
@@ -956,6 +1281,10 @@ function runAutonomousOvernightLeads(db: any) {
           }
         ]
       };
+
+      if (findExistingLeadByIdentity(db.leads, newLead)) {
+        continue;
+      }
 
       db.leads.unshift(newLead);
 
@@ -1010,22 +1339,27 @@ function loadDB() {
         parsed.properties = INITIAL_PROPERTIES;
       }
 
-      // Deduplicate existing leads by fullName to clean up any past concurrent races!
+      // Deduplicate existing leads by identity to clean up past concurrent races.
       if (parsed.leads && Array.isArray(parsed.leads)) {
-        const uniqueLeads: any[] = [];
-        const seenNames = new Set<string>();
-        for (const lead of parsed.leads) {
-          if (!seenNames.has(lead.fullName)) {
-            // Assign default engagement metrics if missing
-            lead.socialEngagementScore = lead.socialEngagementScore || Math.floor(Math.random() * 25) + 70;
-            lead.lastActive = lead.lastActive || new Date(Date.now() - Math.floor(Math.random() * 24 * 60) * 60 * 1000).toISOString();
-            
-            seenNames.add(lead.fullName);
-            uniqueLeads.push(lead);
-          }
+        const originalCount = parsed.leads.length;
+        parsed.leads = dedupeLeadsByIdentity(parsed.leads);
+        const removedCount = originalCount - parsed.leads.length;
+        if (removedCount > 0) {
+          parsed.logs = parsed.logs || [];
+          parsed.logs.unshift({
+            id: `l-dedupe-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            action: "Lead Identity Deduplication",
+            details: `Removed ${removedCount} duplicate lead record(s) by matching normalized name, email, or public profile URL.`,
+            user: "System",
+            role: "Administrator",
+            module: "LeadGen",
+            ipAddress: "127.0.0.1"
+          });
         }
-        parsed.leads = uniqueLeads;
       }
+
+      parsed.autopilotSettings = getDefaultAutopilotSettings(parsed.autopilotSettings);
 
       // Check and execute autonomous overnight lead search
       runAutonomousOvernightLeads(parsed);
@@ -1046,11 +1380,13 @@ function loadDB() {
     logs: INITIAL_LOGS,
     notifications: INITIAL_NOTIFICATIONS,
     autopilotSettings: {
-      isAutonomousActive: true,
-      lastAutopilotRun: new Date(Date.now() - 14 * 60 * 60 * 1000).toISOString(), // Initially set to 14 hours ago to trigger instant leads overnight!
-      intervalHours: 4,
-      targetRegions: ["Port d'Andratx", "Son Vida", "Deià", "Santa Ponsa"],
-      selectedNiche: "German Yacht Owners & Son Vida Villa Seekers"
+      isAutonomousActive: false,
+      lastAutopilotRun: new Date().toISOString(),
+      intervalHours: DEFAULT_AUTOPILOT_INTERVAL_HOURS,
+      targetRegions: DEFAULT_TARGET_REGIONS,
+      selectedNiche: DEFAULT_NICHE,
+      selectedPlatform: DEFAULT_PLATFORM,
+      searchMode: "web"
     }
   };
   runAutonomousOvernightLeads(db);
@@ -1068,6 +1404,349 @@ function saveDB(db: any) {
   } catch (error) {
     console.error("Failed to write database:", error);
   }
+}
+
+function buildOutreachProfile(lead: any, propertiesText: string) {
+  const notes = `${lead.notes || ""} ${lead.source || ""} ${lead.socialHandle || ""}`.toLowerCase();
+  const highProfile =
+    (lead.socialEngagementScore || 0) >= 95 ||
+    /nadal|federer|ronaldo|beckham|musk|zuckerberg|arnault|celebrity|icon|athlete|formula 1|football|tennis|public high-profile/.test(notes);
+
+  const source = `${lead.source || ""}`.toLowerCase();
+  let preferredContactPath = lead.preferredContactPath || "Trusted-advisor introduction first; avoid cold direct-to-person outreach.";
+  let primaryChannel = "Trusted advisor email";
+  if (highProfile) {
+    preferredContactPath = lead.preferredContactPath || "Representative-first via verified management, foundation, academy, family office, or mutual trusted advisor. Do not DM public social profiles.";
+    primaryChannel = "Representative or family-office introduction";
+  } else if (source.includes("linkedin")) {
+    preferredContactPath = lead.preferredContactPath || "Warm LinkedIn introduction through a mutual investor, board member, or private banker.";
+    primaryChannel = "Warm LinkedIn intro";
+  } else if (source.includes("yacht") || notes.includes("yacht")) {
+    preferredContactPath = lead.preferredContactPath || "Warm route through yacht broker, captain, marina concierge, or legal representative.";
+    primaryChannel = "Yacht broker or marina concierge";
+  } else if (source.includes("aviation") || notes.includes("aviation")) {
+    preferredContactPath = lead.preferredContactPath || "Warm route through aircraft manager, FBO concierge, executive assistant, or family office.";
+    primaryChannel = "FBO or aviation manager";
+  }
+
+  const outreachAngle = lead.outreachAngle || (
+    highProfile
+      ? "Privacy, reputation control, no-publicity viewing, and a short confidential market memo rather than a sales pitch."
+      : "A concise off-market shortlist matched to budget, lifestyle intent, and the most relevant property constraint."
+  );
+
+  const riskLevel = highProfile ? "VIP" : (lead.socialEngagementScore || 0) >= 85 ? "Elevated" : "Standard";
+  const contactPrinciple = highProfile
+    ? "Never contact the public profile directly. Ask for permission through a verified representative and offer a one-page private memo first."
+    : "Use a warm, permission-based introduction with one clear next step and no mass-market property blast.";
+
+  return {
+    highProfile,
+    riskLevel,
+    buyerSegment: lead.buyerSegment || (highProfile ? "high-profile representative-led prospect" : "qualified HNW property buyer"),
+    preferredContactPath,
+    outreachAngle,
+    primaryChannel,
+    contactPrinciple,
+    toneOfVoice: highProfile
+      ? "Brief, discreet, representative-safe, and deferential."
+      : "Concise, warm, specific, and quietly premium.",
+    proofPoints: [
+      "NDA-first private Deal Room",
+      "Curated off-market Mallorca/Ibiza shortlist",
+      "No-publicity viewing coordination"
+    ],
+    propertiesText: propertiesText || "a confidential Mallorca/Ibiza off-market shortlist"
+  };
+}
+
+function uniqueCompact(values: any[] = [], fallback: string[] = []) {
+  const cleaned = values
+    .flatMap(value => Array.isArray(value) ? value : [value])
+    .map(value => String(value || "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(cleaned.length ? cleaned : fallback));
+}
+
+function buildOutreachPlaybook(lead: any, profile: ReturnType<typeof buildOutreachProfile>, messageTemplate: string, properties: any[] = []) {
+  const now = new Date().toISOString();
+  const subjectLine = profile.highProfile
+    ? `Confidential Balearic estate memo for ${lead.fullName}`
+    : `Private Mallorca/Ibiza shortlist for ${lead.fullName}`;
+  const propertyAreas = uniqueCompact(properties.map(property => property.area));
+  const propertyTitles = uniqueCompact(properties.slice(0, 3).map(property => `${property.title} (${property.area})`));
+  const searchMustHaves = uniqueCompact(lead.searchProfile?.mustHaves || []);
+  const searchAreas = uniqueCompact(lead.searchProfile?.targetAreas || []);
+  const hooks = uniqueCompact([
+    lead.buyerSegment,
+    lead.outreachAngle,
+    searchMustHaves.join(", "),
+    searchAreas.length ? `Preference for ${searchAreas.join(", ")}` : "",
+    propertyAreas.length ? `Relevant areas: ${propertyAreas.join(", ")}` : ""
+  ], [
+    "Privacy-first off-market acquisition",
+    "Shortlist matched to budget and lifestyle intent"
+  ]);
+  const noGo = profile.highProfile
+    ? [
+      "No generic Instagram DM or public comment.",
+      "No direct phone call without representative permission.",
+      "Do not imply personal access, friendship, private knowledge, or urgency.",
+      "Do not send a full property blast before consent."
+    ]
+    : [
+      "No mass-market property blast.",
+      "No aggressive urgency language.",
+      "Do not mention sensitive wealth assumptions.",
+      "Do not attach confidential files before consent."
+    ];
+  const firstChannel = profile.highProfile ? "Representative email" : profile.primaryChannel;
+  const secondChannel = profile.highProfile ? "Advisor follow-up" : "Warm intro follow-up";
+  const thirdChannel = profile.highProfile ? "Family office or legal office close-loop" : "Private call or memo handoff";
+
+  return {
+    id: lead.outreachPlan?.id || `outreach-${Date.now()}`,
+    status: "draft",
+    riskLevel: profile.riskLevel,
+    primaryRoute: profile.preferredContactPath,
+    contactPrinciple: profile.contactPrinciple,
+    toneOfVoice: profile.toneOfVoice,
+    openingAngle: profile.outreachAngle,
+    subjectLine,
+    messageTemplate,
+    personalizationHooks: hooks,
+    proofPoints: uniqueCompact([
+      ...profile.proofPoints,
+      ...propertyTitles
+    ]),
+    doNotContact: noGo,
+    complianceNotes: [
+      "Permission-based first touch only.",
+      "GDPR-safe public/professional route; no scraped private contact claims.",
+      "Share Deal Room link only after representative consent or explicit buyer opt-in.",
+      "Keep the first message short enough for an assistant or advisor to forward."
+    ],
+    sequence: [
+      {
+        dayOffset: 0,
+        channel: firstChannel,
+        objective: "Earn permission for a private market memo.",
+        action: "Send the short first-touch note with no attachments and no pressure."
+      },
+      {
+        dayOffset: 3,
+        channel: secondChannel,
+        objective: "Offer a two-property private memo or NDA Deal Room.",
+        action: "Reference the original note and ask whether the representative wants a confidential one-page brief."
+      },
+      {
+        dayOffset: 10,
+        channel: thirdChannel,
+        objective: "Close the loop respectfully.",
+        action: "Send one final concise follow-up, then suppress further outreach unless they respond."
+      }
+    ],
+    generatedAt: now,
+    lastReviewedAt: now,
+    sentAt: undefined
+  };
+}
+
+function getTaskPriorityForPlan(plan: any): "Normal" | "High" | "Critical" {
+  if (plan?.riskLevel === "VIP") return "Critical";
+  if (plan?.riskLevel === "Elevated") return "High";
+  return "Normal";
+}
+
+function getDueAtForStep(baseDate: string, dayOffset = 0) {
+  const dueAt = new Date(baseDate);
+  dueAt.setDate(dueAt.getDate() + Number(dayOffset || 0));
+  dueAt.setHours(dayOffset === 0 ? 16 : 10, 0, 0, 0);
+  return dueAt.toISOString();
+}
+
+function buildOutreachTasksFromPlan(lead: any, actor: string) {
+  const plan = lead.outreachPlan;
+  if (!plan?.sequence?.length) return [];
+
+  const now = new Date().toISOString();
+  const baseDate = plan.sentAt || now;
+  const existingTasks = Array.isArray(lead.outreachTasks) ? lead.outreachTasks : [];
+  const otherTasks = existingTasks.filter((task: any) => task.source !== "outreach_sequence" || task.playbookId !== plan.id);
+  const priority = getTaskPriorityForPlan(plan);
+  const owner = lead.assignedAgent || actor || "Mallorca CRM Bot";
+  const sequenceTasks = plan.sequence.map((step: any, index: number) => {
+    const existing = existingTasks.find((task: any) =>
+      task.playbookId === plan.id &&
+      Number(task.dayOffset || 0) === Number(step.dayOffset || 0) &&
+      task.channel === step.channel
+    );
+    const isInitialTouch = Number(step.dayOffset || 0) === 0;
+
+    return {
+      id: existing?.id || `task-${plan.id}-${index}-${Date.now()}`,
+      playbookId: plan.id,
+      title: step.objective || "Follow up with buyer representative",
+      channel: step.channel || plan.primaryRoute || "Trusted advisor route",
+      dueAt: existing?.dueAt || getDueAtForStep(baseDate, step.dayOffset),
+      owner,
+      status: existing?.status || (isInitialTouch ? "done" : "open"),
+      priority,
+      source: "outreach_sequence",
+      dayOffset: Number(step.dayOffset || 0),
+      notes: step.action || plan.contactPrinciple || "Follow the approved outreach playbook.",
+      createdAt: existing?.createdAt || now,
+      completedAt: existing?.completedAt || (isInitialTouch ? now : undefined),
+      completedBy: existing?.completedBy || (isInitialTouch ? actor : undefined)
+    };
+  });
+
+  return [...sequenceTasks, ...otherTasks].sort((a: any, b: any) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+}
+
+function getNextOpenTask(tasks: any[] = []) {
+  return [...tasks]
+    .filter((task: any) => task.status === "open")
+    .sort((a: any, b: any) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime())[0];
+}
+
+function buildLocalOutreachTemplate(lead: any, profile: ReturnType<typeof buildOutreachProfile>) {
+  const budgetText = `EUR ${(lead.budget / 1000000).toFixed(1)}M`;
+  const introName = profile.highProfile ? "the representative team" : lead.fullName;
+  const subject = profile.highProfile
+    ? `Confidential Balearic estate memo for ${lead.fullName}`
+    : `Private Mallorca/Ibiza shortlist for ${lead.fullName}`;
+
+  if (lead.languagePreference === "DE") {
+    return `Outreach Strategy
+Preferred route: ${profile.preferredContactPath}
+Angle: ${profile.outreachAngle}
+Do not: Send a generic Instagram DM or imply a personal relationship.
+
+Subject: ${subject}
+
+Sehr geehrtes Team von ${lead.fullName},
+
+wir melden uns mit einer sehr kurzen, diskreten Immobiliennotiz von Mallorca Agents. Auf Basis des bekannten Profils, des Budgets von ${budgetText} und der passenden Suchparameter haben wir eine vertrauliche Auswahl vorbereitet: ${profile.propertiesText}.
+
+Falls dies aktuell relevant ist, senden wir gern zuerst ein einseitiges, nicht-oeffentliches Markt-Memo mit zwei bis drei streng kuratierten Optionen. Jede Besichtigung kann ohne oeffentliche Sichtbarkeit, ohne Massenaussendung und mit klarer NDA-Struktur organisiert werden.
+
+Mit besten Gruessen,
+Mallorca Agents`;
+  }
+
+  if (lead.languagePreference === "ES") {
+    return `Outreach Strategy
+Preferred route: ${profile.preferredContactPath}
+Angle: ${profile.outreachAngle}
+Do not: Send a generic Instagram DM or imply a personal relationship.
+
+Subject: ${subject}
+
+Estimado equipo de ${lead.fullName},
+
+Le escribimos con una nota breve y completamente discreta de Mallorca Agents. Por el perfil publico, el presupuesto aproximado de ${budgetText} y los criterios de busqueda, hemos preparado una seleccion confidencial: ${profile.propertiesText}.
+
+Si es oportuno, podemos enviar primero un memorando privado de una pagina con dos o tres opciones fuera de mercado. Cualquier visita se coordinaria con maxima privacidad, sin exposicion publica y bajo un protocolo claro de confidencialidad.
+
+Atentamente,
+Mallorca Agents`;
+  }
+
+  return `Outreach Strategy
+Preferred route: ${profile.preferredContactPath}
+Angle: ${profile.outreachAngle}
+Do not: Send a generic Instagram DM or imply a personal relationship.
+
+Subject: ${subject}
+
+Dear ${introName},
+
+I am reaching out with a brief, confidential note from Mallorca Agents. Based on ${lead.fullName}'s public profile, approximate ${budgetText} acquisition range, and the property criteria we are tracking, we have prepared a discreet shortlist: ${profile.propertiesText}.
+
+If relevant, we can first send a one-page private market memo with two or three carefully filtered options. Any viewing can be handled under a no-publicity protocol, with representative coordination and NDA discipline from the first step.
+
+Warm regards,
+Mallorca Agents`;
+}
+
+function createDealRoomToken(leadId: string): string {
+  return Buffer.from(`${Math.random().toString(36).slice(2)}-${Date.now()}-${leadId}`)
+    .toString("base64url")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 32);
+}
+
+function getDealRoomStatus(dealRoom: any): "draft" | "active" | "expired" {
+  if (!dealRoom) return "draft";
+  if (dealRoom.expiresAt && new Date(dealRoom.expiresAt).getTime() < Date.now()) {
+    return "expired";
+  }
+  return dealRoom.status === "draft" ? "draft" : "active";
+}
+
+function getDealRoomShareUrl(req: express.Request, token: string): string {
+  const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
+  return `${protocol}://${req.get("host")}/deal/${token}`;
+}
+
+function selectDealRoomProperties(lead: any, properties: any[], requestedIds?: string[]): string[] {
+  const requested = Array.isArray(requestedIds)
+    ? requestedIds.filter((id: string) => properties.some((property: any) => property.id === id))
+    : [];
+  if (requested.length > 0) return Array.from(new Set<string>(requested)).slice(0, 6);
+
+  const existingInterest = Array.isArray(lead.propertyInterestIds)
+    ? lead.propertyInterestIds.filter((id: string) => properties.some((property: any) => property.id === id))
+    : [];
+  if (existingInterest.length > 0) return Array.from(new Set<string>(existingInterest)).slice(0, 6);
+
+  return properties
+    .filter((property: any) => Number(lead.budget || 0) >= property.price * 0.85)
+    .slice(0, 4)
+    .map((property: any) => property.id);
+}
+
+function findDealRoomByToken(token: string) {
+  const lead = dbStore.leads.find((candidate: any) => candidate.dealRoom?.accessToken === token);
+  if (!lead) return null;
+  return { lead, dealRoom: lead.dealRoom };
+}
+
+function normalizeStringArray(value: any, fallback: string[] = []): string[] {
+  const raw = Array.isArray(value)
+    ? value
+    : (typeof value === "string" ? value.split(",") : fallback);
+  return Array.from(new Set(
+    raw
+      .map((item: any) => String(item || "").trim())
+      .filter(Boolean)
+  ));
+}
+
+function normalizeLeadSearchProfile(input: any = {}, lead: any = {}) {
+  const leadBudget = Number(lead.budget || input.maxBudget || 5000000);
+  const minBudget = Math.max(0, Number(input.minBudget) || Math.round(leadBudget * 0.6));
+  const maxBudget = Math.max(minBudget, Number(input.maxBudget) || leadBudget);
+  const privacyLevel = ["Standard", "High", "Ultra"].includes(input.privacyLevel) ? input.privacyLevel : "High";
+  const purchaseTimeframe = ["Immediate", "3-6 months", "6-12 months", "Exploratory"].includes(input.purchaseTimeframe)
+    ? input.purchaseTimeframe
+    : "3-6 months";
+
+  return {
+    targetAreas: normalizeStringArray(input.targetAreas),
+    mustHaves: normalizeStringArray(input.mustHaves),
+    minBudget,
+    maxBudget,
+    minBeds: Math.max(0, Number(input.minBeds) || 4),
+    minBaths: Math.max(0, Number(input.minBaths) || 4),
+    minSizeSqM: Math.max(0, Number(input.minSizeSqM) || 450),
+    privacyLevel,
+    purchaseTimeframe,
+    advisorRoute: String(input.advisorRoute || lead.preferredContactPath || "Trusted-advisor introduction first.").trim(),
+    profileNotes: String(input.profileNotes || lead.outreachAngle || "").trim(),
+    updatedAt: new Date().toISOString()
+  };
 }
 
 // Initialize database
@@ -1108,11 +1787,13 @@ app.get("/api/data", (req, res) => {
     logs: dbStore.logs,
     notifications: dbStore.notifications,
     autopilotSettings: dbStore.autopilotSettings || {
-      isAutonomousActive: true,
+      isAutonomousActive: false,
       lastAutopilotRun: new Date().toISOString(),
-      intervalHours: 4,
-      targetRegions: ["Port d'Andratx", "Son Vida", "Deià", "Santa Ponsa"],
-      selectedNiche: "German Yacht Owners & Son Vida Villa Seekers"
+      intervalHours: DEFAULT_AUTOPILOT_INTERVAL_HOURS,
+      targetRegions: DEFAULT_TARGET_REGIONS,
+      selectedNiche: DEFAULT_NICHE,
+      selectedPlatform: DEFAULT_PLATFORM,
+      searchMode: "web"
     },
     encryptionState: {
       atRest: "AES-256 equivalent enabled",
@@ -1125,17 +1806,20 @@ app.get("/api/data", (req, res) => {
 // Configure and Toggle AI Autopilot background settings
 app.post("/api/ai/autopilot/config", (req, res) => {
   dbStore = loadDB();
-  const { isAutonomousActive, intervalHours, targetRegions, selectedNiche, selectedPlatform } = req.body;
+  const { isAutonomousActive, intervalHours, scanIntervalSeconds, targetRegions, selectedNiche, selectedPlatform, searchMode } = req.body;
 
   if (!dbStore.autopilotSettings) {
     dbStore.autopilotSettings = {
-      isAutonomousActive: true,
+      isAutonomousActive: false,
       lastAutopilotRun: new Date().toISOString(),
-      intervalHours: 4,
-      targetRegions: ["Port d'Andratx", "Son Vida", "Deià", "Santa Ponsa"],
-      selectedNiche: "German Yacht Owners & Son Vida Villa Seekers"
+      intervalHours: DEFAULT_AUTOPILOT_INTERVAL_HOURS,
+      targetRegions: DEFAULT_TARGET_REGIONS,
+      selectedNiche: DEFAULT_NICHE,
+      selectedPlatform: DEFAULT_PLATFORM,
+      searchMode: "web"
     };
   }
+  dbStore.autopilotSettings = getDefaultAutopilotSettings(dbStore.autopilotSettings);
 
   if (isAutonomousActive !== undefined) {
     dbStore.autopilotSettings.isAutonomousActive = isAutonomousActive;
@@ -1166,10 +1850,16 @@ app.post("/api/ai/autopilot/config", (req, res) => {
     });
   }
 
-  if (intervalHours !== undefined) dbStore.autopilotSettings.intervalHours = Number(intervalHours);
+  const requestedIntervalHours = intervalHours !== undefined
+    ? Number(intervalHours)
+    : (scanIntervalSeconds !== undefined ? Number(scanIntervalSeconds) / 3600 : undefined);
+  if (requestedIntervalHours !== undefined && Number.isFinite(requestedIntervalHours)) {
+    dbStore.autopilotSettings.intervalHours = Math.max(DEFAULT_AUTOPILOT_INTERVAL_HOURS, requestedIntervalHours);
+  }
   if (targetRegions !== undefined) dbStore.autopilotSettings.targetRegions = targetRegions;
   if (selectedNiche !== undefined) dbStore.autopilotSettings.selectedNiche = selectedNiche;
   if (selectedPlatform !== undefined) dbStore.autopilotSettings.selectedPlatform = selectedPlatform;
+  if (searchMode !== undefined) dbStore.autopilotSettings.searchMode = searchMode;
 
   // Set initial run if turning active and didn't have one
   if (isAutonomousActive && !dbStore.autopilotSettings.lastAutopilotRun) {
@@ -1214,7 +1904,8 @@ app.post("/api/data/reset", (req, res) => {
         type: "security",
         read: false
       }
-    ]
+    ],
+    autopilotSettings: getDefaultAutopilotSettings()
   };
   saveDB(dbStore);
   res.json({
@@ -1229,10 +1920,19 @@ app.post("/api/data/reset", (req, res) => {
 // Create Lead (CRM Track)
 app.post("/api/leads", (req, res) => {
   dbStore = loadDB();
-  const { fullName, email, phone, source, status, interestLevel, budget, languagePreference, notes, assignedAgent, propertyInterestIds, socialHandle } = req.body;
+  const { fullName, email, phone, source, status, interestLevel, budget, languagePreference, notes, assignedAgent, propertyInterestIds, socialHandle, preferredContactPath, outreachAngle, buyerSegment, searchProfile } = req.body;
   
   if (!fullName || !email) {
     return res.status(400).json({ error: "Full Name and Email are strictly required" });
+  }
+
+  const duplicateLead = findExistingLeadByIdentity(dbStore.leads, { fullName, email, socialHandle });
+  if (duplicateLead) {
+    return res.status(409).json({
+      error: "Lead already exists",
+      duplicate: true,
+      lead: duplicateLead
+    });
   }
 
   const newLead: any = {
@@ -1251,6 +1951,11 @@ app.post("/api/leads", (req, res) => {
     nextFollowUpDate: new Date(Date.now() + 3*24*60*60*1000).toISOString().split("T")[0], // default 3 days out
     propertyInterestIds: propertyInterestIds || [],
     socialHandle: socialHandle || "",
+    preferredContactPath,
+    outreachAngle,
+    buyerSegment,
+    identityKey: getLeadIdentityAliases({ fullName, email, socialHandle })[0],
+    searchProfile: searchProfile ? normalizeLeadSearchProfile(searchProfile, { budget, preferredContactPath, outreachAngle }) : undefined,
     timeline: [
       {
         id: `t-${Date.now()}`,
@@ -1356,6 +2061,217 @@ app.put("/api/leads/:id", (req, res) => {
 
   saveDB(dbStore);
   res.json({ lead: updatedLead, logs: dbStore.logs, notifications: dbStore.notifications });
+});
+
+// Create/update buyer search profile for property matching
+app.post("/api/leads/:id/search-profile", (req, res) => {
+  dbStore = loadDB();
+  const leadId = req.params.id;
+  const leadIndex = dbStore.leads.findIndex((candidate: any) => candidate.id === leadId);
+
+  if (leadIndex === -1) {
+    return res.status(404).json({ error: "Lead not retrieved" });
+  }
+
+  const lead = dbStore.leads[leadIndex];
+  const nextProfile = normalizeLeadSearchProfile(req.body?.searchProfile || req.body, lead);
+  lead.timeline = Array.isArray(lead.timeline) ? lead.timeline : [];
+  lead.searchProfile = nextProfile;
+  lead.timeline.unshift({
+    id: `t-search-${Date.now()}`,
+    date: nextProfile.updatedAt,
+    type: "sync",
+    title: "Buyer Search Profile Updated",
+    desc: `Updated matching criteria: ${nextProfile.targetAreas.length || "all"} target area(s), ${nextProfile.mustHaves.length || "no"} must-have signal(s), budget EUR ${(nextProfile.minBudget / 1000000).toFixed(1)}M-EUR ${(nextProfile.maxBudget / 1000000).toFixed(1)}M.`,
+    agent: req.body?.updatedBy || "Mallorca CRM Bot"
+  });
+
+  dbStore.logs.unshift({
+    id: `l-search-${Date.now()}`,
+    timestamp: nextProfile.updatedAt,
+    action: "Buyer Search Profile Saved",
+    details: `Stored structured matching criteria for ${lead.fullName}: areas ${nextProfile.targetAreas.join(", ") || "open"}, must-haves ${nextProfile.mustHaves.join(", ") || "open"}.`,
+    user: req.body?.updatedBy || "System AI Bot",
+    role: "Sales Agent",
+    module: "CRM",
+    ipAddress: req.ip || "127.0.0.1"
+  });
+
+  dbStore.notifications.unshift({
+    id: `n-search-${Date.now()}`,
+    title: "Search Profile Updated",
+    message: `${lead.fullName}'s property matching criteria are now structured.`,
+    timestamp: nextProfile.updatedAt,
+    type: "intelligence",
+    read: false
+  });
+
+  saveDB(dbStore);
+  res.json({ success: true, lead, searchProfile: nextProfile, logs: dbStore.logs, notifications: dbStore.notifications });
+});
+
+// Create or refresh a private Deal Room / Web-Expose for one lead
+app.post("/api/leads/:id/deal-room", (req, res) => {
+  dbStore = loadDB();
+  const leadId = req.params.id;
+  const lead = dbStore.leads.find((candidate: any) => candidate.id === leadId);
+
+  if (!lead) {
+    return res.status(404).json({ error: "Lead not retrieved" });
+  }
+
+  const { selectedPropertyIds, ndaRequired = true, privateNote, expiryDays = 14 } = req.body || {};
+  const expiresInDays = Math.min(Math.max(Number(expiryDays) || 14, 1), 45);
+  const now = new Date();
+  const existingRoom = lead.dealRoom || {};
+  const accessToken = existingRoom.accessToken || createDealRoomToken(lead.id);
+  const roomProperties = selectDealRoomProperties(lead, dbStore.properties, selectedPropertyIds);
+  lead.timeline = Array.isArray(lead.timeline) ? lead.timeline : [];
+
+  lead.dealRoom = {
+    id: existingRoom.id || `deal-${Date.now()}`,
+    status: "active",
+    accessToken,
+    sharePath: `/deal/${accessToken}`,
+    shareUrl: getDealRoomShareUrl(req, accessToken),
+    ndaRequired: Boolean(ndaRequired),
+    ndaAcceptedAt: existingRoom.ndaAcceptedAt,
+    consentCapturedAt: existingRoom.consentCapturedAt,
+    selectedPropertyIds: roomProperties,
+    privateNote: privateNote || existingRoom.privateNote || "Curated confidential shortlist for a qualified Mallorca/Ibiza acquisition conversation.",
+    createdAt: existingRoom.createdAt || now.toISOString(),
+    lastSharedAt: now.toISOString(),
+    lastViewedAt: existingRoom.lastViewedAt,
+    expiresAt: new Date(now.getTime() + expiresInDays * 24 * 60 * 60 * 1000).toISOString(),
+    viewCount: Number(existingRoom.viewCount || 0)
+  };
+
+  lead.timeline.unshift({
+    id: `t-deal-${Date.now()}`,
+    date: now.toISOString(),
+    type: "sync",
+    title: existingRoom.accessToken ? "Private Deal Room Refreshed" : "Private Deal Room Created",
+    desc: `Prepared a private Web-Expose with ${roomProperties.length} shortlisted property file(s), NDA gate ${lead.dealRoom.ndaRequired ? "enabled" : "disabled"}, and a ${expiresInDays}-day expiry window.`,
+    agent: "Mallorca CRM Bot"
+  });
+
+  dbStore.logs.unshift({
+    id: `l-deal-${Date.now()}`,
+    timestamp: now.toISOString(),
+    action: "Private Deal Room Prepared",
+    details: `Generated confidential Web-Expose link for ${lead.fullName} with ${roomProperties.length} matched listings and NDA/consent controls.`,
+    user: "System AI Bot",
+    role: "Sales Agent",
+    module: "CRM",
+    ipAddress: req.ip || "127.0.0.1"
+  });
+
+  dbStore.notifications.unshift({
+    id: `n-deal-${Date.now()}`,
+    title: "Deal Room Ready",
+    message: `Private Web-Expose link prepared for ${lead.fullName}.`,
+    timestamp: now.toISOString(),
+    type: "sync",
+    read: false
+  });
+
+  saveDB(dbStore);
+  res.json({ success: true, lead, dealRoom: lead.dealRoom, logs: dbStore.logs, notifications: dbStore.notifications });
+});
+
+// Public private-link Deal Room payload with NDA gate
+app.get("/api/deal-rooms/:token", (req, res) => {
+  dbStore = loadDB();
+  const match = findDealRoomByToken(req.params.token);
+
+  if (!match) {
+    return res.status(404).json({ error: "Deal room not found" });
+  }
+
+  const { lead, dealRoom } = match;
+  const status = getDealRoomStatus(dealRoom);
+  if (status === "expired") {
+    dealRoom.status = "expired";
+    saveDB(dbStore);
+    return res.status(410).json({ error: "Deal room expired", dealRoom: { ...dealRoom, status } });
+  }
+
+  dealRoom.viewCount = Number(dealRoom.viewCount || 0) + 1;
+  dealRoom.lastViewedAt = new Date().toISOString();
+  dealRoom.shareUrl = getDealRoomShareUrl(req, dealRoom.accessToken);
+
+  const ndaAccepted = !dealRoom.ndaRequired || Boolean(dealRoom.ndaAcceptedAt);
+  const selectedIds = Array.isArray(dealRoom.selectedPropertyIds) ? dealRoom.selectedPropertyIds : [];
+  const properties = ndaAccepted
+    ? dbStore.properties.filter((property: any) => selectedIds.includes(property.id))
+    : [];
+
+  saveDB(dbStore);
+  res.json({
+    dealRoom: {
+      ...dealRoom,
+      status,
+      lockedPropertyCount: ndaAccepted ? 0 : selectedIds.length
+    },
+    access: {
+      ndaRequired: Boolean(dealRoom.ndaRequired),
+      ndaAccepted
+    },
+    lead: {
+      fullName: lead.fullName,
+      languagePreference: lead.languagePreference,
+      budget: lead.budget,
+      buyerSegment: lead.buyerSegment,
+      outreachAngle: lead.outreachAngle
+    },
+    agent: dbStore.team.find((member: any) => member.name === lead.assignedAgent) || dbStore.team[0],
+    properties
+  });
+});
+
+app.post("/api/deal-rooms/:token/accept-nda", (req, res) => {
+  dbStore = loadDB();
+  const match = findDealRoomByToken(req.params.token);
+
+  if (!match) {
+    return res.status(404).json({ error: "Deal room not found" });
+  }
+
+  const { lead, dealRoom } = match;
+  const status = getDealRoomStatus(dealRoom);
+  if (status === "expired") {
+    dealRoom.status = "expired";
+    saveDB(dbStore);
+    return res.status(410).json({ error: "Deal room expired" });
+  }
+
+  const now = new Date().toISOString();
+  dealRoom.ndaAcceptedAt = now;
+  dealRoom.consentCapturedAt = now;
+  lead.timeline = Array.isArray(lead.timeline) ? lead.timeline : [];
+
+  lead.timeline.unshift({
+    id: `t-nda-${Date.now()}`,
+    date: now,
+    type: "contact",
+    title: "Deal Room NDA Accepted",
+    desc: "Private Web-Expose gate accepted through the secure Deal Room link.",
+    agent: "Deal Room"
+  });
+
+  dbStore.logs.unshift({
+    id: `l-nda-${Date.now()}`,
+    timestamp: now,
+    action: "Deal Room Consent Captured",
+    details: `NDA/consent gate accepted for ${lead.fullName}'s private Web-Expose.`,
+    user: "Deal Room Visitor",
+    role: "Lead Gen Specialist",
+    module: "CRM",
+    ipAddress: req.ip || "127.0.0.1"
+  });
+
+  saveDB(dbStore);
+  res.json({ success: true, dealRoom });
 });
 
 // Delete Lead - Restricted access (Administrator required)
@@ -1526,9 +2442,13 @@ app.post("/api/ai/scrape-social", async (req, res) => {
   const { platform, niche, searchMode } = req.body;
 
   // Let's call Gemini to generate/ground an advanced luxury lead matching Mallorca context!
-  const targetChannel = platform || "Instagram High-End Target Reels";
-  const targetNiche = niche || "German Yacht Owners & Son Vida Villa Seekers";
-  const mode = searchMode || "social"; // 'social' (simulation) or 'web' (real web research agent)
+  const targetChannel = platform || dbStore.autopilotSettings?.selectedPlatform || DEFAULT_PLATFORM;
+  const targetNiche = niche || dbStore.autopilotSettings?.selectedNiche || DEFAULT_NICHE;
+  const mode = searchMode || dbStore.autopilotSettings?.searchMode || "web"; // 'social' or 'web'
+  const existingLeadNames = dbStore.leads
+    .map((lead: any) => lead.fullName)
+    .filter(Boolean)
+    .slice(0, 75);
 
   const { ai, enabled } = getGeminiClient();
 
@@ -1546,9 +2466,12 @@ app.post("/api/ai/scrape-social", async (req, res) => {
         // Real-world web-grounded research mode!
         prompt = `You are a professional luxury real estate researcher for Mallorca Agents.
 You must use Google Search to find a REAL-WORLD high-net-worth individual, business executive, prominent tech founder, or athlete (e.g., billionaire startup founders, CEOs, notable venture capitalists, or sports stars) who has recently purchased, sold, or publicly shown deep interest in luxury properties or corporate hospitality estates in Mallorca, Spain (including areas like Son Vida, Palma, Port d'Andratx, Deià, Valldemossa, Calvià, Soller, etc.).
-Alternatively, identify a real-world wealthy CEO, startup founder, or venture capitalist who earned major liquidity recently (via acquisition, stock sale, or IPO) and would be a prime candidate for purchasing homes in Mallorca.
+Alternatively, identify a real-world wealthy CEO, startup founder, or venture capitalist who earned major liquidity recently (via acquisition, stock sale, or IPO) and would be a prime candidate for purchasing homes in Mallorca or Ibiza.
+Broaden the search to buyer-intent lanes: family offices, post-exit founders, private aviation users, superyacht owners, art collectors, hotel/branded-residence investors, elite athlete representatives, and private banking circles.
 
 Your task is to compile ONE real-world high-profile prospect.
+Do NOT return any person already known in this CRM: ${existingLeadNames.join(", ") || "none"}.
+Do not invent private direct contact details for famous people. If a public direct email or phone is not clearly available, set email to "representative-only" and phone to "Representative channel only".
 You MUST output your response in raw JSON format matching this schema exactly:
 {
   "fullName": "Real Person's full name (no placeholders, must be a known real person)",
@@ -1556,8 +2479,11 @@ You MUST output your response in raw JSON format matching this schema exactly:
   "phone": "a plausible active phone number with country code, e.g. +34600...",
   "language": "DE or EN or ES",
   "budget": 12500000, 
-  "notes": "A highly detailed, comprehensive research summary explaining who this real person is, their business background, company, recent web/lifestyle milestones, and why they would be a perfect match for a luxury residence in Mallorca. Reference real articles, public details, or search insights.",
-  "socialHandle": "A verified public LinkedIn URL, Twitter handle, official Wikipedia page, corporate bio website, or news article URL"
+  "notes": "A highly detailed, comprehensive research summary explaining who this real person is, their business background, company, recent web/lifestyle milestones, and why they would be a perfect match for a luxury residence in Mallorca or Ibiza. Reference real articles, public details, or search insights.",
+  "socialHandle": "A verified public LinkedIn URL, Twitter handle, official Wikipedia page, corporate bio website, or news article URL",
+  "preferredContactPath": "Representative-first, family-office-first, advisor-first, or public corporate route",
+  "outreachAngle": "The bespoke angle your team should use for a discreet first touch",
+  "buyerSegment": "family office / founder liquidity / athlete / yacht owner / hospitality investor / art collector"
 }
 
 Do NOT output made-up names like 'Sir Cavendish'. Find a REAL person with real web footprint. Return only raw JSON string.`;
@@ -1568,6 +2494,8 @@ Do NOT output made-up names like 'Sir Cavendish'. Find a REAL person with real w
         // Standard high-quality targeted simulation mode
         prompt = `A luxury real estate CRM scraping simulation needs to generate one hyper-realistic prospective client lead interested in buying homes in Mallorca (budget between €4M and €25M).
 The lead source target is: "${targetChannel}" with targeted niche interest: "${targetNiche}".
+Do NOT return any person already known in this CRM: ${existingLeadNames.join(", ") || "none"}.
+Vary the buyer source across founder liquidity, family office, superyacht, private aviation, art collector, athlete representative, hospitality investor, and private banking lanes.
 Provide your response in JSON format. It is mandatory to use the JSON Schema representing this lead structure exactly:
 {
   "fullName": "Name",
@@ -1576,7 +2504,10 @@ Provide your response in JSON format. It is mandatory to use the JSON Schema rep
   "language": "EN or DE or ES",
   "budget": 8500000,
   "notes": "highly descriptive lead background, business sector, specific aesthetic demands (infinity pool, sea view), and how they interacted with our social post",
-  "socialHandle": "mock platform account"
+  "socialHandle": "mock platform account",
+  "preferredContactPath": "best respectful outreach route",
+  "outreachAngle": "bespoke first-touch angle",
+  "buyerSegment": "buyer category"
 }
 Strictly follow the JSON scheme. Return only valid raw JSON.`;
       }
@@ -1697,32 +2628,36 @@ Strictly follow the JSON scheme. Return only valid raw JSON.`;
   ];
 
   if (!leadData) {
-    // Elegant fallback: pick a random real-world candidate from the elite list!
-    const picked = REAL_WORLD_CANDIDATES[Math.floor(Math.random() * REAL_WORLD_CANDIDATES.length)];
-    leadData = {
-      fullName: picked.name,
-      email: picked.email,
-      phone: picked.phone,
-      language: picked.lang,
-      budget: picked.budget,
-      notes: picked.notes,
-      socialHandle: picked.handle,
-      socialEngagementScore: picked.socialEngagementScore,
-      lastActive: picked.lastActive
-    };
+    leadData = getExpandedUniqueCandidate(dbStore.leads, targetNiche, targetChannel);
   }
 
   // Double check name validation - never return Sir Cavendish if user explicitly requested real names.
   // In case the ai generated a generic made up placeholder, we replace it with one of our real people to satisfy user criteria.
-  if (leadData.fullName.includes("Cavendish") || leadData.fullName.includes("Placeholder") || leadData.fullName.includes("Sir ") || leadData.fullName.includes("John Doe")) {
-    const picked = REAL_WORLD_CANDIDATES[Math.floor(Math.random() * REAL_WORLD_CANDIDATES.length)];
-    leadData.fullName = picked.name;
-    leadData.notes = picked.notes;
-    leadData.socialHandle = picked.handle;
-    leadData.budget = picked.budget;
-    leadData.socialEngagementScore = picked.socialEngagementScore;
-    leadData.lastActive = picked.lastActive;
+  if (!leadData.fullName || leadData.fullName.includes("Cavendish") || leadData.fullName.includes("Placeholder") || leadData.fullName.includes("Sir ") || leadData.fullName.includes("John Doe")) {
+    leadData = getExpandedUniqueCandidate(dbStore.leads, targetNiche, targetChannel);
   }
+
+  if (findExistingLeadByIdentity(dbStore.leads, leadData)) {
+    leadData = getExpandedUniqueCandidate(dbStore.leads, targetNiche, targetChannel);
+  }
+
+  if (findExistingLeadByIdentity(dbStore.leads, leadData)) {
+    const existingLead = findExistingLeadByIdentity(dbStore.leads, leadData);
+    return res.status(409).json({
+      success: false,
+      duplicate: true,
+      message: "No unique lead could be produced in this scan. Broaden the niche or run a different source lane.",
+      lead: existingLead,
+      logs: dbStore.logs,
+      notifications: dbStore.notifications
+    });
+  }
+
+  leadData.email = leadData.email || "representative-only";
+  leadData.phone = leadData.phone || "Representative channel only";
+  leadData.budget = Number(leadData.budget) || 8500000;
+  leadData.language = ["EN", "DE", "ES"].includes(leadData.language) ? leadData.language : "EN";
+  leadData.notes = leadData.notes || `Qualified ${targetNiche} prospect surfaced from ${targetChannel}.`;
 
   // Appending search citation list if compiled from live Google search grounding
   if (citationLinks.length > 0) {
@@ -1750,6 +2685,10 @@ Strictly follow the JSON scheme. Return only valid raw JSON.`;
     socialHandle: leadData.socialHandle,
     socialEngagementScore: leadData.socialEngagementScore || Math.floor(Math.random() * 25) + 70,
     lastActive: leadData.lastActive || new Date().toISOString(),
+    preferredContactPath: leadData.preferredContactPath || "Representative-first or trusted-advisor introduction only.",
+    outreachAngle: leadData.outreachAngle || "Confidential off-market shortlist with a respectful, low-pressure first touch.",
+    buyerSegment: leadData.buyerSegment || (mode === "web" ? "web-grounded high-profile prospect" : "targeted luxury buyer persona"),
+    identityKey: getLeadIdentityAliases(leadData)[0],
     timeline: [
       {
         id: `t-soc-${Date.now()}`,
@@ -1763,6 +2702,18 @@ Strictly follow the JSON scheme. Return only valid raw JSON.`;
       }
     ]
   };
+
+  const existingBeforeInsert = findExistingLeadByIdentity(dbStore.leads, generatedLead);
+  if (existingBeforeInsert) {
+    return res.status(409).json({
+      success: false,
+      duplicate: true,
+      message: `${existingBeforeInsert.fullName} is already in the CRM. The scrape was skipped to protect lead quality.`,
+      lead: existingBeforeInsert,
+      logs: dbStore.logs,
+      notifications: dbStore.notifications
+    });
+  }
 
   dbStore.leads.unshift(generatedLead);
 
@@ -1805,6 +2756,7 @@ app.post("/api/leads/:id/generate-followup", async (req, res) => {
   // Find properties of interest to list
   const propertiesInterest = dbStore.properties.filter((p: any) => lead.propertyInterestIds.includes(p.id));
   const propertiesText = propertiesInterest.map(p => `${p.title} in ${p.area} priced at €${p.price.toLocaleString()}`).join(", ");
+  const outreachProfile = buildOutreachProfile(lead, propertiesText);
 
   const { ai, enabled } = getGeminiClient();
 
@@ -1814,7 +2766,7 @@ app.post("/api/leads/:id/generate-followup", async (req, res) => {
       const languageMap: Record<string, string> = { DE: "German", EN: "English", ES: "Spanish" };
       const selectedLanguageName = languageMap[lead.languagePreference] || "English";
 
-      const prompt = `Write an ultra-luxury, professional real estate follow-up outreach message (email/whatsapp style) to a premium high-net-worth client.
+      const prompt = `Write a bespoke luxury real estate outreach strategy and ready-to-send message for a premium high-net-worth client.
       Client information:
       - Full name: ${lead.fullName}
       - Budget: €${lead.budget.toLocaleString()}
@@ -1822,12 +2774,19 @@ app.post("/api/leads/:id/generate-followup", async (req, res) => {
       - Specific notes & desires: ${lead.notes}
       - Properties they showed interest in: ${propertiesText || "Exclusive properties in Port d'Andratx/Son Vida"}
       - Communication language requested: ${selectedLanguageName}
+      - Buyer segment: ${outreachProfile.buyerSegment}
+      - Preferred contact path: ${outreachProfile.preferredContactPath}
+      - Outreach angle: ${outreachProfile.outreachAngle}
+      - High-profile representative-led protocol: ${outreachProfile.highProfile ? "YES" : "NO"}
       
       Requirements:
       - Keep the tone sophisticated, exclusive, elegant, yet warm (no aggressive selling flags).
-      - Address them with respect. Reference exclusive market insights or custom showings of their properties of interest.
+      - If this is a famous or highly messaged person, write to the representative team or trusted advisor, not to the person directly.
+      - Never recommend a generic Instagram DM for public figures. Do not imply a personal relationship or private knowledge.
+      - Reference exclusive market insights or custom showings of their properties of interest.
       - Add a beautiful high-end sign-off from "Mallorca Agents Team".
-      - Provide ONLY the direct message text. Avoid placeholders like "[Agent Name]" or "[Insert Date]"; make it ready to send.`;
+      - Return two sections: "Outreach Strategy" and "Message Template".
+      - Avoid placeholders like "[Agent Name]" or "[Insert Date]"; make it ready to send.`;
 
       const response = await ai.models.generateContent({
         model: "gemini-3.5-flash",
@@ -1846,6 +2805,13 @@ app.post("/api/leads/:id/generate-followup", async (req, res) => {
 
   // Backup fallback template
   if (!generatedText) {
+    generatedText = buildLocalOutreachTemplate(lead, outreachProfile);
+  }
+
+  const outreachPlan = buildOutreachPlaybook(lead, outreachProfile, generatedText, propertiesInterest);
+  lead.outreachPlan = outreachPlan;
+
+  if (false) {
     if (lead.languagePreference === "DE") {
       generatedText = `Sehr geehrte(r) ${lead.fullName},
 
@@ -1883,28 +2849,160 @@ The Mallorca Agents Team`;
   }
 
   // Update follow-up timeline action
+  lead.timeline = Array.isArray(lead.timeline) ? lead.timeline : [];
   lead.timeline.unshift({
     id: `t-auto-${Date.now()}`,
-    date: new Date().toISOString(),
+    date: outreachPlan.generatedAt,
     type: "ai_generation",
-    title: "AI Autopilot Outreach Structured",
-    desc: `Generated bespoke outreach template in ${lead.languagePreference} matching high-end profile. Ready for broadcast.`,
+    title: "Outreach Playbook Structured",
+    desc: `Generated ${outreachPlan.riskLevel} outreach playbook with ${outreachPlan.sequence.length} touchpoint(s), route ${outreachPlan.primaryRoute}, and ready-to-review message template.`,
     agent: "Mallorca CRM Bot"
   });
 
   dbStore.logs.unshift({
     id: `l-${Date.now()}`,
-    timestamp: new Date().toISOString(),
-    action: "Bespoke Outreach Generated",
-    details: `Generated AI marketing assets for client ${lead.fullName} under secure protocol.`,
+    timestamp: outreachPlan.generatedAt,
+    action: "Outreach Playbook Generated",
+    details: `Generated ${outreachPlan.riskLevel} outreach strategy for ${lead.fullName}: ${outreachPlan.primaryRoute}`,
     user: "System AI Bot",
     role: "Sales Agent",
     module: "CRM",
     ipAddress: req.ip || "127.0.0.1"
   });
 
+  dbStore.notifications.unshift({
+    id: `n-outreach-${Date.now()}`,
+    title: "Outreach Playbook Ready",
+    message: `${lead.fullName}'s representative-safe outreach sequence is ready for review.`,
+    timestamp: outreachPlan.generatedAt,
+    type: "intelligence",
+    read: false
+  });
+
   saveDB(dbStore);
-  res.json({ message: generatedText, logs: dbStore.logs });
+  res.json({ message: generatedText, strategy: outreachProfile, outreachPlan, lead, logs: dbStore.logs, notifications: dbStore.notifications });
+});
+
+app.post("/api/leads/:id/outreach-dispatch", (req, res) => {
+  dbStore = loadDB();
+  const leadId = req.params.id;
+  const lead = dbStore.leads.find((candidate: any) => candidate.id === leadId);
+
+  if (!lead) {
+    return res.status(404).json({ error: "Lead not retrieved" });
+  }
+
+  if (!lead.outreachPlan) {
+    return res.status(400).json({ error: "Generate an outreach playbook before dispatch." });
+  }
+
+  const now = new Date().toISOString();
+  const actor = req.body?.dispatchedBy || "Mallorca CRM Bot";
+  lead.outreachPlan.status = "sent";
+  lead.outreachPlan.sentAt = now;
+  lead.outreachPlan.lastReviewedAt = now;
+  lead.lastContactDate = now;
+  if (lead.status === "New") {
+    lead.status = "Contacted";
+  }
+  lead.outreachTasks = buildOutreachTasksFromPlan(lead, actor);
+  const nextTask = getNextOpenTask(lead.outreachTasks);
+  lead.nextFollowUpDate = nextTask?.dueAt || new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+
+  lead.timeline = Array.isArray(lead.timeline) ? lead.timeline : [];
+  lead.timeline.unshift({
+    id: `t-outreach-sent-${Date.now()}`,
+    date: now,
+    type: "contact",
+    title: "Outreach Marked Sent",
+    desc: `Marked ${lead.outreachPlan.riskLevel} outreach as sent via ${lead.outreachPlan.primaryRoute}. ${lead.outreachTasks.filter((task: any) => task.status === "open").length} follow-up task(s) staged.`,
+    agent: actor
+  });
+
+  dbStore.logs.unshift({
+    id: `l-outreach-sent-${Date.now()}`,
+    timestamp: now,
+    action: "Outreach Sequence Sent",
+    details: `${actor} marked the outreach plan for ${lead.fullName} as sent. Follow-up due ${new Date(lead.nextFollowUpDate).toLocaleDateString()}.`,
+    user: actor,
+    role: "Sales Agent",
+    module: "CRM",
+    ipAddress: req.ip || "127.0.0.1"
+  });
+
+  dbStore.notifications.unshift({
+    id: `n-outreach-sent-${Date.now()}`,
+    title: "Outreach Sent",
+    message: `${lead.fullName} moved into a managed outreach task sequence.`,
+    timestamp: now,
+    type: "lead",
+    read: false
+  });
+
+  saveDB(dbStore);
+  res.json({ success: true, lead, outreachPlan: lead.outreachPlan, outreachTasks: lead.outreachTasks, logs: dbStore.logs, notifications: dbStore.notifications });
+});
+
+app.post("/api/leads/:id/tasks/:taskId/complete", (req, res) => {
+  dbStore = loadDB();
+  const leadId = req.params.id;
+  const taskId = req.params.taskId;
+  const lead = dbStore.leads.find((candidate: any) => candidate.id === leadId);
+
+  if (!lead) {
+    return res.status(404).json({ error: "Lead not retrieved" });
+  }
+
+  lead.outreachTasks = Array.isArray(lead.outreachTasks) ? lead.outreachTasks : [];
+  const task = lead.outreachTasks.find((candidate: any) => candidate.id === taskId);
+
+  if (!task) {
+    return res.status(404).json({ error: "Task not found for this lead." });
+  }
+
+  const now = new Date().toISOString();
+  const actor = req.body?.completedBy || "Mallorca CRM Bot";
+  task.status = "done";
+  task.completedAt = now;
+  task.completedBy = actor;
+  if (req.body?.notes) {
+    task.notes = `${task.notes}\n\nCompletion note: ${String(req.body.notes).trim()}`;
+  }
+
+  const nextTask = getNextOpenTask(lead.outreachTasks);
+  lead.nextFollowUpDate = nextTask?.dueAt || lead.nextFollowUpDate;
+  lead.timeline = Array.isArray(lead.timeline) ? lead.timeline : [];
+  lead.timeline.unshift({
+    id: `t-task-${Date.now()}`,
+    date: now,
+    type: "contact",
+    title: "Outreach Task Completed",
+    desc: `${task.title} completed via ${task.channel}. ${nextTask ? `Next task: ${nextTask.title}.` : "No open outreach tasks remain."}`,
+    agent: actor
+  });
+
+  dbStore.logs.unshift({
+    id: `l-task-${Date.now()}`,
+    timestamp: now,
+    action: "Outreach Task Completed",
+    details: `${actor} completed task "${task.title}" for ${lead.fullName}.`,
+    user: actor,
+    role: "Sales Agent",
+    module: "CRM",
+    ipAddress: req.ip || "127.0.0.1"
+  });
+
+  dbStore.notifications.unshift({
+    id: `n-task-${Date.now()}`,
+    title: "Task Completed",
+    message: `${task.title} completed for ${lead.fullName}.`,
+    timestamp: now,
+    type: "sync",
+    read: false
+  });
+
+  saveDB(dbStore);
+  res.json({ success: true, lead, task, outreachTasks: lead.outreachTasks, logs: dbStore.logs, notifications: dbStore.notifications });
 });
 
 // AI Performance analytics matching insights

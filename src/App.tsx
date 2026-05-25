@@ -39,7 +39,7 @@ import {
   Share2,
   ExternalLink
 } from 'lucide-react';
-import { Lead, TeamMember, MallorcaProperty, AuditLog, SystemNotification, Language } from './types';
+import { Lead, TeamMember, MallorcaProperty, AuditLog, SystemNotification, Language, DealRoom, LeadSearchProfile, LeadOutreachPlan, LeadTask } from './types';
 import { LanguageProvider, useTranslation, DICTIONARY } from './components/LanguageSelector';
 import { motion } from 'motion/react';
 import TeamConfigView from './components/TeamConfigView';
@@ -48,6 +48,21 @@ import FunnelChart from './components/FunnelChart';
 import LuxuryLogin from './components/LuxuryLogin';
 import InteractiveTourFullscreen from './components/InteractiveTourFullscreen';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+
+const MIN_AGENT_SCAN_INTERVAL_SECONDS = 30 * 60;
+const MAX_AGENT_SCAN_INTERVAL_SECONDS = 2 * 60 * 60;
+const DEFAULT_AGENT_SCAN_INTERVAL_SECONDS = MIN_AGENT_SCAN_INTERVAL_SECONDS;
+const FOCUS_RING_CLASS = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c5a059]';
+const TOUCH_TARGET_CLASS = 'min-h-[44px]';
+const ICON_TOUCH_CLASS = 'min-h-[44px] min-w-[44px]';
+
+const formatScanInterval = (seconds: number) => {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = minutes / 60;
+  return `${Number.isInteger(hours) ? hours.toFixed(0) : hours.toFixed(1)} h`;
+};
 
 const formatLastActive = (val: string) => {
   if (!val) return "No recent signal";
@@ -64,6 +79,422 @@ const formatLastActive = (val: string) => {
   const diffDays = Math.floor(diffHours / 24);
   return `Active ${diffDays}d ago`;
 };
+
+const MATCH_SIGNAL_TAGS = [
+  { label: 'Sea view', keywords: ['sea', 'frontline', 'waterfront', 'coast', 'cliff', 'harbor', 'cove', 'beach', 'marina'] },
+  { label: 'Yacht access', keywords: ['yacht', 'marina', 'berth', 'harbor', 'port', 'boat', 'sea access'] },
+  { label: 'Privacy', keywords: ['private', 'privacy', 'secure', 'secluded', 'exclusive', 'quiet', 'compound', 'staff'] },
+  { label: 'Wellness', keywords: ['wellness', 'spa', 'gym', 'pool', 'sauna', 'recovery', 'fitness'] },
+  { label: 'Historic character', keywords: ['historic', 'stone', 'palace', 'finca', 'traditional', 'heritage', 'estate'] },
+  { label: 'Smart home', keywords: ['smart', 'technology', 'automation', 'modernist', 'data', 'glass'] },
+  { label: 'Airport access', keywords: ['airport', 'palma', 'transfer', 'fast access', 'lock-and-leave'] },
+  { label: 'Investment upside', keywords: ['hotel', 'branded', 'development', 'plot', 'rental', 'conversion', 'investment'] }
+];
+
+type PropertyMatchResult = {
+  property: MallorcaProperty;
+  score: number;
+  grade: string;
+  reasons: string[];
+  concerns: string[];
+  matchedTags: string[];
+  isPriority: boolean;
+};
+
+const splitListInput = (value: string) => value
+  .split(',')
+  .map(item => item.trim())
+  .filter(Boolean);
+
+const formatBudgetRange = (minBudget: number, maxBudget: number) =>
+  `EUR ${(minBudget / 1000000).toFixed(1)}M-EUR ${(maxBudget / 1000000).toFixed(1)}M`;
+
+const findAreaSignals = (lead: Lead, properties: MallorcaProperty[]) => {
+  const noteText = `${lead.notes} ${lead.source} ${lead.buyerSegment || ''} ${lead.outreachAngle || ''}`.toLowerCase();
+  const interestAreas = properties
+    .filter(property => lead.propertyInterestIds.includes(property.id))
+    .map(property => property.area);
+  const mentionedAreas = properties
+    .map(property => property.area)
+    .filter(area => noteText.includes(area.toLowerCase()));
+  return Array.from(new Set([...interestAreas, ...mentionedAreas])).slice(0, 4);
+};
+
+const inferMustHaveSignals = (lead: Lead) => {
+  const text = `${lead.notes} ${lead.source} ${lead.buyerSegment || ''} ${lead.outreachAngle || ''}`.toLowerCase();
+  const signals = MATCH_SIGNAL_TAGS
+    .filter(tag => tag.keywords.some(keyword => text.includes(keyword)))
+    .map(tag => tag.label);
+  if (signals.length > 0) return Array.from(new Set(signals)).slice(0, 5);
+  if (/athlete|tennis|sport|recovery|wellness/.test(text)) return ['Wellness', 'Privacy'];
+  if (/yacht|marina|captain|port/.test(text)) return ['Yacht access', 'Sea view', 'Privacy'];
+  if (/aviation|airport|fbo/.test(text)) return ['Airport access', 'Privacy'];
+  if (/art|collector|gallery/.test(text)) return ['Historic character', 'Privacy'];
+  if (/hospitality|hotel|branded/.test(text)) return ['Investment upside', 'Sea view'];
+  return ['Privacy', 'Sea view'];
+};
+
+const buildLeadSearchProfile = (lead: Lead, properties: MallorcaProperty[]): LeadSearchProfile => {
+  if (lead.searchProfile) {
+    return {
+      ...lead.searchProfile,
+      targetAreas: lead.searchProfile.targetAreas || [],
+      mustHaves: lead.searchProfile.mustHaves || []
+    };
+  }
+
+  const noteText = `${lead.notes} ${lead.source} ${lead.buyerSegment || ''}`.toLowerCase();
+  const targetAreas = findAreaSignals(lead, properties);
+  const mustHaves = inferMustHaveSignals(lead);
+  const highPrivacy = (lead.socialEngagementScore || 0) >= 95 || /celebrity|athlete|representative|family office|privacy|secure|public high-profile/.test(noteText);
+  const ultraPrivacy = /nadal|federer|ronaldo|beckham|musk|arnault|formula 1|public high-profile/.test(noteText);
+
+  return {
+    targetAreas,
+    mustHaves,
+    minBudget: Math.round((lead.budget * 0.6) / 100000) * 100000,
+    maxBudget: lead.budget,
+    minBeds: /family|compound|guest/.test(noteText) ? 5 : 4,
+    minBaths: 4,
+    minSizeSqM: /compound|estate|family office|hospitality/.test(noteText) ? 650 : 450,
+    privacyLevel: ultraPrivacy ? 'Ultra' : (highPrivacy ? 'High' : 'Standard'),
+    purchaseTimeframe: lead.interestLevel === 'High' ? '3-6 months' : 'Exploratory',
+    advisorRoute: lead.preferredContactPath || 'Trusted-advisor introduction first.',
+    profileNotes: lead.outreachAngle || 'Curate a concise off-market shortlist with privacy-first positioning.'
+  };
+};
+
+const scorePropertyMatch = (lead: Lead, property: MallorcaProperty, profile: LeadSearchProfile): PropertyMatchResult => {
+  const propertyText = `${property.title} ${property.area} ${property.highlight} ${property.description}`.toLowerCase();
+  const reasons: string[] = [];
+  const concerns: string[] = [];
+  let score = 0;
+
+  if (property.price <= profile.maxBudget) {
+    score += 24;
+    reasons.push('Within stated ceiling');
+  } else if (property.price <= profile.maxBudget * 1.12) {
+    score += 13;
+    concerns.push('Slight stretch above ceiling');
+  } else {
+    concerns.push('Above budget ceiling');
+  }
+
+  if (property.price >= profile.minBudget * 0.9) {
+    score += 8;
+  }
+
+  if (profile.targetAreas.length === 0 || profile.targetAreas.includes(property.area)) {
+    score += 22;
+    reasons.push(profile.targetAreas.length === 0 ? 'Area still open' : `${property.area} target area`);
+  } else {
+    concerns.push('Outside target area');
+  }
+
+  if (property.beds >= profile.minBeds) {
+    score += 10;
+    reasons.push(`${property.beds} bedrooms`);
+  } else {
+    concerns.push(`Only ${property.beds} bedrooms`);
+  }
+
+  if (property.baths >= profile.minBaths) {
+    score += 6;
+  }
+
+  if (property.sizeSqM >= profile.minSizeSqM) {
+    score += 10;
+    reasons.push(`${property.sizeSqM} sqm scale`);
+  } else {
+    concerns.push('Below preferred size');
+  }
+
+  const matchedTags = MATCH_SIGNAL_TAGS
+    .filter(tag => profile.mustHaves.includes(tag.label) && tag.keywords.some(keyword => propertyText.includes(keyword)))
+    .map(tag => tag.label);
+  score += Math.min(20, matchedTags.length * 7);
+  matchedTags.forEach(tag => reasons.push(tag));
+
+  if (lead.propertyInterestIds.includes(property.id)) {
+    score += 10;
+    reasons.push('Existing CRM interest');
+  }
+
+  if (profile.privacyLevel === 'Ultra' && /private|secure|exclusive|secluded|compound|quiet/.test(propertyText)) {
+    score += 6;
+    reasons.push('Privacy signal');
+  }
+
+  const boundedScore = Math.max(0, Math.min(100, Math.round(score)));
+  const grade = boundedScore >= 90 ? 'A+' : boundedScore >= 80 ? 'A' : boundedScore >= 70 ? 'B+' : boundedScore >= 60 ? 'B' : 'Review';
+
+  return {
+    property,
+    score: boundedScore,
+    grade,
+    reasons: Array.from(new Set(reasons)).slice(0, 4),
+    concerns: Array.from(new Set(concerns)).slice(0, 2),
+    matchedTags,
+    isPriority: lead.propertyInterestIds.includes(property.id) || boundedScore >= 82
+  };
+};
+
+const getPropertyMatchResults = (lead: Lead, properties: MallorcaProperty[], profileOverride?: LeadSearchProfile) => {
+  const profile = profileOverride || buildLeadSearchProfile(lead, properties);
+  return properties
+    .map(property => scorePropertyMatch(lead, property, profile))
+    .filter(result => result.score >= 45 || lead.propertyInterestIds.includes(result.property.id))
+    .sort((a, b) => b.score - a.score || a.property.price - b.property.price)
+    .slice(0, 8);
+};
+
+const getOutreachRiskClass = (risk?: LeadOutreachPlan['riskLevel']) => {
+  if (risk === 'VIP') return 'bg-rose-500/10 text-rose-300 border-rose-500/25';
+  if (risk === 'Elevated') return 'bg-amber-500/10 text-amber-300 border-amber-500/25';
+  return 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25';
+};
+
+const getOutreachStatusClass = (status?: LeadOutreachPlan['status']) => {
+  if (status === 'sent') return 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25';
+  if (status === 'reviewed') return 'bg-sky-500/10 text-sky-300 border-sky-500/25';
+  return 'bg-neutral-900 text-neutral-300 border-neutral-800';
+};
+
+const formatOutreachOffset = (days: number) => days === 0 ? 'Day 0' : `Day ${days}`;
+
+const isTaskOverdue = (task: LeadTask) =>
+  task.status === 'open' && new Date(task.dueAt).getTime() < Date.now();
+
+const getTaskStatusClass = (task: LeadTask) => {
+  if (task.status === 'done') return 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25';
+  if (task.status === 'blocked') return 'bg-rose-500/10 text-rose-300 border-rose-500/25';
+  if (isTaskOverdue(task)) return 'bg-rose-500/10 text-rose-300 border-rose-500/25';
+  if (task.priority === 'Critical') return 'bg-amber-500/10 text-amber-300 border-amber-500/25';
+  return 'bg-neutral-900 text-neutral-300 border-neutral-800';
+};
+
+const getTaskLabel = (task: LeadTask) => {
+  if (task.status === 'done') return 'Done';
+  if (task.status === 'blocked') return 'Blocked';
+  if (isTaskOverdue(task)) return 'Overdue';
+  return task.priority;
+};
+
+const formatTaskDue = (dueAt: string) => {
+  const due = new Date(dueAt);
+  if (Number.isNaN(due.getTime())) return 'No due date';
+  const today = new Date();
+  const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const startDue = new Date(due.getFullYear(), due.getMonth(), due.getDate()).getTime();
+  const diffDays = Math.round((startDue - startToday) / (24 * 60 * 60 * 1000));
+  if (diffDays === 0) return `Today ${due.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  if (diffDays === 1) return `Tomorrow ${due.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  if (diffDays === -1) return `Yesterday ${due.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  return due.toLocaleDateString([], { month: 'short', day: 'numeric' });
+};
+
+type DealRoomPayload = {
+  dealRoom: DealRoom & { lockedPropertyCount?: number };
+  access: {
+    ndaRequired: boolean;
+    ndaAccepted: boolean;
+  };
+  lead: {
+    fullName: string;
+    languagePreference: 'EN' | 'DE' | 'ES';
+    budget: number;
+    buyerSegment?: string;
+    outreachAngle?: string;
+  };
+  agent: TeamMember;
+  properties: MallorcaProperty[];
+};
+
+function PublicDealRoomView() {
+  const [payload, setPayload] = useState<DealRoomPayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [accepting, setAccepting] = useState(false);
+  const [error, setError] = useState('');
+  const token = window.location.pathname.split('/deal/')[1]?.split('/')[0] || '';
+
+  const loadDealRoom = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/deal-rooms/${token}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Deal room unavailable');
+        setPayload(data.dealRoom ? { dealRoom: data.dealRoom, access: { ndaRequired: true, ndaAccepted: false }, lead: {} as any, agent: {} as any, properties: [] } : null);
+        return;
+      }
+      setPayload(data);
+      setError('');
+    } catch (err) {
+      setError('Deal room connection failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDealRoom();
+  }, [token]);
+
+  const handleAcceptNda = async () => {
+    setAccepting(true);
+    try {
+      const res = await fetch(`/api/deal-rooms/${token}/accept-nda`, { method: 'POST' });
+      if (res.ok) {
+        await loadDealRoom();
+      } else {
+        const data = await res.json();
+        setError(data.error || 'NDA gate unavailable');
+      }
+    } catch (err) {
+      setError('NDA confirmation failed');
+    } finally {
+      setAccepting(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#050505] text-neutral-200 flex items-center justify-center">
+        <RefreshCcw className="w-5 h-5 animate-spin text-[#c5a059]" />
+      </div>
+    );
+  }
+
+  if (error && !payload) {
+    return (
+      <div className="min-h-screen bg-[#050505] text-neutral-200 flex items-center justify-center p-6">
+        <div className="max-w-md bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-6 text-center">
+          <Lock className="w-8 h-8 text-rose-400 mx-auto mb-3" />
+          <h1 className="text-xl font-serif text-white">Private Deal Room Closed</h1>
+          <p className="text-xs text-neutral-400 mt-2">{error}</p>
+        </div>
+      </div>
+    );
+  }
+
+  const dealRoom = payload?.dealRoom;
+  const lead = payload?.lead;
+  const expiresAt = dealRoom?.expiresAt ? new Date(dealRoom.expiresAt).toLocaleDateString() : 'Private';
+  const isLocked = Boolean(payload?.access.ndaRequired && !payload?.access.ndaAccepted);
+
+  return (
+    <div className="min-h-screen bg-[#050505] text-neutral-200">
+      <header className="border-b border-neutral-850 bg-black/70">
+        <div className="max-w-6xl mx-auto px-5 py-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.24em] text-[#c5a059] font-mono">Mallorca Agents Private Web-Expose</p>
+            <h1 className="text-2xl md:text-3xl font-serif italic text-white mt-1">Confidential Balearic Shortlist</h1>
+          </div>
+          <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider">
+            <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">Secure Link</span>
+            <span className="px-2.5 py-1 rounded-full bg-neutral-900 text-neutral-400 border border-neutral-800">Expires {expiresAt}</span>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-5 py-8 space-y-6">
+        {error && (
+          <div className="border border-rose-900/40 bg-rose-950/20 text-rose-300 rounded-xl p-3 text-xs">
+            {error}
+          </div>
+        )}
+
+        <section className="grid grid-cols-1 lg:grid-cols-[1.2fr_0.8fr] gap-6">
+          <div className="bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] text-neutral-500 uppercase tracking-widest font-mono">Prepared for</p>
+                <h2 className="text-2xl font-serif text-white mt-1">{lead?.fullName || 'Private Buyer'}</h2>
+                <p className="text-xs text-neutral-400 mt-2 max-w-2xl">
+                  {dealRoom?.privateNote || 'Curated confidential shortlist for a qualified Mallorca/Ibiza acquisition conversation.'}
+                </p>
+              </div>
+              <Shield className="w-6 h-6 text-[#c5a059] shrink-0" />
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-6">
+              <div className="border border-neutral-850 rounded-xl p-3 bg-black/40">
+                <p className="text-[9px] uppercase tracking-widest text-neutral-500">Budget</p>
+                <p className="text-sm font-mono font-bold text-white mt-1">EUR {((lead?.budget || 0) / 1000000).toFixed(1)}M</p>
+              </div>
+              <div className="border border-neutral-850 rounded-xl p-3 bg-black/40">
+                <p className="text-[9px] uppercase tracking-widest text-neutral-500">Segment</p>
+                <p className="text-xs text-neutral-200 mt-1 truncate">{lead?.buyerSegment || 'HNW buyer'}</p>
+              </div>
+              <div className="border border-neutral-850 rounded-xl p-3 bg-black/40">
+                <p className="text-[9px] uppercase tracking-widest text-neutral-500">Views</p>
+                <p className="text-sm font-mono font-bold text-white mt-1">{dealRoom?.viewCount || 0}</p>
+              </div>
+              <div className="border border-neutral-850 rounded-xl p-3 bg-black/40">
+                <p className="text-[9px] uppercase tracking-widest text-neutral-500">Access</p>
+                <p className="text-xs text-neutral-200 mt-1">{isLocked ? 'NDA pending' : 'Unlocked'}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-[#0a0a0a] border border-neutral-800 rounded-2xl p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Key className="w-4 h-4 text-[#c5a059]" />
+              <h3 className="text-sm font-bold text-white uppercase tracking-wider">Access Protocol</h3>
+            </div>
+            <p className="text-xs text-neutral-400 leading-relaxed">
+              {isLocked
+                ? `${dealRoom?.lockedPropertyCount || 0} confidential property file(s) are sealed until the NDA gate is accepted.`
+                : 'NDA/consent gate recorded. Property files are open for this private session.'}
+            </p>
+            {isLocked ? (
+              <button
+                onClick={handleAcceptNda}
+                disabled={accepting}
+                className="w-full bg-[#c5a059] text-black hover:bg-white disabled:opacity-60 rounded-xl py-2.5 text-xs font-bold uppercase tracking-wider inline-flex items-center justify-center gap-2"
+              >
+                {accepting ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Lock className="w-3.5 h-3.5" />}
+                Accept NDA Gate
+              </button>
+            ) : (
+              <div className="text-[11px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-3 flex items-center gap-2">
+                <CheckCircle className="w-4 h-4" />
+                Consent captured {dealRoom?.ndaAcceptedAt ? new Date(dealRoom.ndaAcceptedAt).toLocaleString() : 'for this room'}
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {isLocked ? (
+            <div className="md:col-span-2 xl:col-span-3 border border-neutral-800 rounded-2xl bg-[#0a0a0a] p-10 text-center">
+              <Lock className="w-8 h-8 text-[#c5a059] mx-auto mb-3" />
+              <h3 className="text-lg font-serif text-white">Property Files Sealed</h3>
+              <p className="text-xs text-neutral-500 mt-2">The shortlist opens after NDA confirmation.</p>
+            </div>
+          ) : (
+            payload?.properties.map(property => (
+              <article key={property.id} className="bg-[#0a0a0a] border border-neutral-800 rounded-2xl overflow-hidden">
+                <img src={property.image} alt={property.title} className="w-full h-44 object-cover" />
+                <div className="p-4 space-y-3">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-widest text-[#c5a059] font-mono">{property.area}</p>
+                    <h3 className="text-base font-serif font-bold text-white mt-1">{property.title}</h3>
+                  </div>
+                  <p className="text-xs text-neutral-400 leading-relaxed line-clamp-3">{property.description}</p>
+                  <div className="flex items-center justify-between border-t border-neutral-900 pt-3">
+                    <span className="text-sm font-mono font-bold text-[#c5a059]">EUR {(property.price / 1000000).toFixed(1)}M</span>
+                    <span className="text-[10px] text-neutral-500 font-mono">{property.beds} bd / {property.sizeSqM} sqm</span>
+                  </div>
+                </div>
+              </article>
+            ))
+          )}
+        </section>
+      </main>
+    </div>
+  );
+}
 
 function CRMContent({ 
   initialActiveMember, 
@@ -124,10 +555,16 @@ function CRMContent({
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [showDossierModal, setShowDossierModal] = useState<boolean>(false);
   const [dossierLead, setDossierLead] = useState<Lead | null>(null);
+  const [dealRoomWorking, setDealRoomWorking] = useState<boolean>(false);
+  const [searchProfileDraft, setSearchProfileDraft] = useState<LeadSearchProfile | null>(null);
+  const [isSavingSearchProfile, setIsSavingSearchProfile] = useState<boolean>(false);
   
   // Gemini-driven follow-up generation states
   const [generatedFollowUp, setGeneratedFollowUp] = useState<string>('');
   const [isGeneratingFollowUp, setIsGeneratingFollowUp] = useState<boolean>(false);
+  const [outreachPlanDraft, setOutreachPlanDraft] = useState<LeadOutreachPlan | null>(null);
+  const [isDispatchingOutreach, setIsDispatchingOutreach] = useState<boolean>(false);
+  const [taskActionId, setTaskActionId] = useState<string | null>(null);
   const [showAuditSection, setShowAuditSection] = useState<boolean>(false);
   
   // Form state for adding prospective leads
@@ -143,15 +580,15 @@ function CRMContent({
   
   // Scraper Simulation states
   const [agentSearchMode, setAgentSearchMode] = useState<'social' | 'web'>('web');
-  const [selectedScrapePlatform, setSelectedScrapePlatform] = useState<string>('Instagram Luxury Target Campaigns');
-  const [selectedScrapeNiche, setSelectedScrapeNiche] = useState<string>('German Yacht Owners & Son Vida Villa Seekers');
+  const [selectedScrapePlatform, setSelectedScrapePlatform] = useState<string>('Family offices, yacht clubs, liquidity events, and Balearic luxury advisors');
+  const [selectedScrapeNiche, setSelectedScrapeNiche] = useState<string>('Post-liquidity founders, yacht owners, athletes, and family offices seeking Mallorca or Ibiza privacy estates');
   const [isScraping, setIsScraping] = useState<boolean>(false);
   const [lastScrapedLead, setLastScrapedLead] = useState<Lead | null>(null);
 
   // Autonomous AI Lead Scout Agent States
   const [autopilotActive, setAutopilotActive] = useState<boolean>(false);
-  const [agentScanInterval, setAgentScanInterval] = useState<number>(30); // in seconds
-  const [agentCountdown, setAgentCountdown] = useState<number>(30); // in seconds
+  const [agentScanInterval, setAgentScanInterval] = useState<number>(DEFAULT_AGENT_SCAN_INTERVAL_SECONDS); // in seconds
+  const [agentCountdown, setAgentCountdown] = useState<number>(DEFAULT_AGENT_SCAN_INTERVAL_SECONDS); // in seconds
   const [agentTerminalLogs, setAgentTerminalLogs] = useState<Array<{ id: string; time: string; text: string; type: 'info' | 'success' | 'warn' }>>([
     { id: 'l-init-1', time: new Date().toLocaleTimeString(), text: 'AI Agent "Hunter-Scout-v2" loaded with Gemini 3.5 framework integrations.', type: 'info' },
     { id: 'l-init-2', time: new Date().toLocaleTimeString(), text: 'Target matrices set matching private registries & active search keywords.', type: 'info' },
@@ -191,6 +628,17 @@ function CRMContent({
           if (data.autopilotSettings.selectedPlatform) {
             setSelectedScrapePlatform(data.autopilotSettings.selectedPlatform);
           }
+          if (data.autopilotSettings.searchMode) {
+            setAgentSearchMode(data.autopilotSettings.searchMode as 'social' | 'web');
+          }
+          if (data.autopilotSettings.intervalHours) {
+            const persistedSeconds = Math.max(
+              MIN_AGENT_SCAN_INTERVAL_SECONDS,
+              Math.round(Number(data.autopilotSettings.intervalHours) * 60 * 60)
+            );
+            setAgentScanInterval(persistedSeconds);
+            setAgentCountdown(persistedSeconds);
+          }
         }
         
         // Retain selection if lead still exists
@@ -214,6 +662,18 @@ function CRMContent({
   useEffect(() => {
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (!selectedLead) {
+      setSearchProfileDraft(null);
+      setOutreachPlanDraft(null);
+      setGeneratedFollowUp('');
+      return;
+    }
+    setSearchProfileDraft(buildLeadSearchProfile(selectedLead, properties));
+    setOutreachPlanDraft(selectedLead.outreachPlan || null);
+    setGeneratedFollowUp(selectedLead.outreachPlan?.messageTemplate || '');
+  }, [selectedLead?.id, selectedLead?.searchProfile?.updatedAt, selectedLead?.outreachPlan?.generatedAt, selectedLead?.outreachPlan?.sentAt]);
 
   // Sync state offline/online change triggers
   useEffect(() => {
@@ -370,6 +830,9 @@ function CRMContent({
         resetAddLeadForm();
         showAlert("HNW client lead onboarded on MallorcaAgents pipeline successfully.", "success");
         fetchData(true);
+      } else if (res.status === 409) {
+        const result = await res.json();
+        showAlert(result.error || "Lead already exists in the CRM.", "danger");
       }
     } catch (err) {
       showAlert("Server communication error", "danger");
@@ -493,7 +956,18 @@ function CRMContent({
       if (res.ok) {
         const data = await res.json();
         setGeneratedFollowUp(data.message);
+        if (data.outreachPlan) {
+          setOutreachPlanDraft(data.outreachPlan);
+        }
+        if (data.lead) {
+          setSelectedLead(data.lead);
+          setLeads(prev => prev.map(item => item.id === data.lead.id ? data.lead : item));
+        }
         setLogs(data.logs);
+        if (data.notifications) {
+          setNotifications(data.notifications);
+        }
+        showAlert("Outreach playbook generated and attached to this lead.", "success");
         fetchData(true);
       } else {
         showAlert("Unable to connect with AI generation pipeline.", "danger");
@@ -505,12 +979,158 @@ function CRMContent({
     }
   };
 
+  const handleSearchProfilePatch = (patch: Partial<LeadSearchProfile>) => {
+    if (!selectedLead) return;
+    setSearchProfileDraft(prev => ({
+      ...buildLeadSearchProfile(selectedLead, properties),
+      ...prev,
+      ...patch
+    }));
+  };
+
+  const handleSaveSearchProfile = async () => {
+    if (!selectedLead || !searchProfileDraft) return;
+    setIsSavingSearchProfile(true);
+    const normalizedProfile: LeadSearchProfile = {
+      ...searchProfileDraft,
+      targetAreas: searchProfileDraft.targetAreas.map(item => item.trim()).filter(Boolean),
+      mustHaves: searchProfileDraft.mustHaves.map(item => item.trim()).filter(Boolean),
+      minBudget: Math.max(0, Number(searchProfileDraft.minBudget) || 0),
+      maxBudget: Math.max(Number(searchProfileDraft.minBudget) || 0, Number(searchProfileDraft.maxBudget) || selectedLead.budget),
+      minBeds: Math.max(0, Number(searchProfileDraft.minBeds) || 0),
+      minBaths: Math.max(0, Number(searchProfileDraft.minBaths) || 0),
+      minSizeSqM: Math.max(0, Number(searchProfileDraft.minSizeSqM) || 0),
+      advisorRoute: searchProfileDraft.advisorRoute || selectedLead.preferredContactPath || 'Trusted-advisor introduction first.',
+      profileNotes: searchProfileDraft.profileNotes || selectedLead.outreachAngle || ''
+    };
+
+    try {
+      const res = await fetch(`/api/leads/${selectedLead.id}/search-profile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          searchProfile: normalizedProfile,
+          updatedBy: activeMember.name
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showAlert(data.error || "Unable to save buyer search profile.", "danger");
+        return;
+      }
+
+      setSelectedLead(data.lead);
+      setSearchProfileDraft(data.searchProfile);
+      setLeads(prev => prev.map(item => item.id === data.lead.id ? data.lead : item));
+      setLogs(data.logs);
+      setNotifications(data.notifications);
+      showAlert("Buyer search profile saved and matching recalculated.", "success");
+    } catch (err) {
+      showAlert("Search profile save failed", "danger");
+    } finally {
+      setIsSavingSearchProfile(false);
+    }
+  };
+
+  const handlePrepareDealRoom = async (lead: Lead) => {
+    setDealRoomWorking(true);
+    try {
+      const profileForRoom = selectedLead?.id === lead.id && searchProfileDraft ? searchProfileDraft : buildLeadSearchProfile(lead, properties);
+      const matchedPropertyIds = getPropertyMatchResults(lead, properties, profileForRoom)
+        .slice(0, 6)
+        .map(result => result.property.id);
+
+      const res = await fetch(`/api/leads/${lead.id}/deal-room`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          selectedPropertyIds: matchedPropertyIds,
+          ndaRequired: true,
+          expiryDays: 14,
+          privateNote: lead.outreachAngle || 'Curated confidential shortlist for a qualified Mallorca/Ibiza acquisition conversation.'
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showAlert(data.error || "Unable to prepare private deal room.", "danger");
+        return;
+      }
+
+      setSelectedLead(data.lead);
+      setLeads(prev => prev.map(item => item.id === data.lead.id ? data.lead : item));
+      setLogs(data.logs);
+      setNotifications(data.notifications);
+      showAlert(`Private deal room prepared for ${data.lead.fullName}.`, "success");
+    } catch (err) {
+      showAlert("Deal room preparation failed", "danger");
+    } finally {
+      setDealRoomWorking(false);
+    }
+  };
+
+  const copyDealRoomLink = async (dealRoom: DealRoom) => {
+    const link = dealRoom.shareUrl || `${window.location.origin}${dealRoom.sharePath}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      showAlert("Private deal room link copied.", "success");
+    } catch (err) {
+      showAlert("Unable to copy deal room link.", "danger");
+    }
+  };
+
   // Simulated outreach dispatch
-  const handleSimulateDispatch = (lead: Lead) => {
-    showAlert(`Bespoke luxury campaign dispatched via encrypted protocol to ${lead.fullName} (${lead.email})`, "success");
-    setGeneratedFollowUp('');
-    // Refresh log to capture showing updates
-    fetchData(true);
+  const handleSimulateDispatch = async (lead: Lead) => {
+    setIsDispatchingOutreach(true);
+    try {
+      const res = await fetch(`/api/leads/${lead.id}/outreach-dispatch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dispatchedBy: activeMember.name })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showAlert(data.error || "Unable to mark outreach sequence as sent.", "danger");
+        return;
+      }
+
+      setSelectedLead(data.lead);
+      setOutreachPlanDraft(data.outreachPlan);
+      setLeads(prev => prev.map(item => item.id === data.lead.id ? data.lead : item));
+      setLogs(data.logs);
+      setNotifications(data.notifications);
+      showAlert(`Outreach sequence marked sent for ${data.lead.fullName}.`, "success");
+    } catch (err) {
+      showAlert("Outreach dispatch request failed", "danger");
+    } finally {
+      setIsDispatchingOutreach(false);
+    }
+  };
+
+  const handleCompleteOutreachTask = async (lead: Lead, task: LeadTask) => {
+    setTaskActionId(task.id);
+    try {
+      const res = await fetch(`/api/leads/${lead.id}/tasks/${task.id}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completedBy: activeMember.name })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showAlert(data.error || "Unable to complete outreach task.", "danger");
+        return;
+      }
+
+      setSelectedLead(data.lead);
+      setOutreachPlanDraft(data.lead.outreachPlan || null);
+      setLeads(prev => prev.map(item => item.id === data.lead.id ? data.lead : item));
+      setLogs(data.logs);
+      setNotifications(data.notifications);
+      showAlert(`Task completed for ${data.lead.fullName}.`, "success");
+    } catch (err) {
+      showAlert("Task completion request failed", "danger");
+    } finally {
+      setTaskActionId(null);
+    }
   };
 
   // AI-Driven Social Media Hunter Trigger Simulation
@@ -538,6 +1158,9 @@ function CRMContent({
         setLastScrapedLead(data.lead);
         showAlert(`Luxury buyer lead auto-scraped from ${selectedScrapePlatform}!`, "success");
         fetchData(true);
+      } else if (res.status === 409) {
+        const data = await res.json();
+        showAlert(data.message || "Lead already exists. Scan skipped to avoid duplicates.", "danger");
       }
     } catch (err) {
       showAlert("Scraper simulator is offline", "danger");
@@ -558,7 +1181,9 @@ function CRMContent({
         body: JSON.stringify({
           isAutonomousActive: newVal,
           selectedNiche: selectedScrapeNiche,
-          selectedPlatform: selectedScrapePlatform
+          selectedPlatform: selectedScrapePlatform,
+          searchMode: agentSearchMode,
+          scanIntervalSeconds: agentScanInterval
         })
       });
       if (res.ok) {
@@ -624,6 +1249,18 @@ function CRMContent({
         
         showAlert(`Autopilot Agent acquired lead: ${newLead.fullName}!`, "success");
         fetchData(true);
+      } else if (res.status === 409) {
+        const data = await res.json();
+        setAgentTerminalLogs(prev => [
+          {
+            id: `log-duplicate-${Date.now()}`,
+            time: new Date().toLocaleTimeString(),
+            text: data.message || `Scan skipped: matching lead already exists in CRM.`,
+            type: 'warn'
+          },
+          ...prev
+        ]);
+        fetchData(true);
       }
     } catch (err) {
       setAgentTerminalLogs(prev => [
@@ -663,9 +1300,9 @@ function CRMContent({
           // Periodic status update simulation inside terminal
           const timeToTriggerLog = prev - 1;
           const statusLogs = [
-            { triggerSec: 25, text: `🔍 Scouting high-engagement signals on ${selectedScrapePlatform}...`, type: 'info' },
-            { triggerSec: 15, text: `🛡️ Pulling registration data matching theme "${selectedScrapeNiche}"...`, type: 'info' },
-            { triggerSec: 5, text: `🧠 Feeding candidate profiles into Gemini 3.5 structured parsing loop...`, type: 'info' }
+            { triggerSec: Math.max(agentScanInterval - 60, 1), text: `🔍 Scouting high-engagement signals on ${selectedScrapePlatform}...`, type: 'info' },
+            { triggerSec: Math.max(Math.floor(agentScanInterval / 2), 1), text: `🛡️ Pulling registration data matching theme "${selectedScrapeNiche}"...`, type: 'info' },
+            { triggerSec: 60, text: `🧠 Feeding candidate profiles into Gemini 3.5 structured parsing loop...`, type: 'info' }
           ];
 
           const matchLog = statusLogs.find(l => l.triggerSec === timeToTriggerLog);
@@ -702,7 +1339,7 @@ function CRMContent({
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [autopilotActive, agentScanInterval, selectedScrapePlatform, selectedScrapeNiche]);
+  }, [autopilotActive, agentScanInterval, selectedScrapePlatform, selectedScrapeNiche, agentSearchMode]);
 
   // AI-Driven performance analytics insight generator
   const triggerPerformanceReport = async () => {
@@ -742,6 +1379,10 @@ function CRMContent({
   // Total active budget tracker calculation
   const totalPipelineBudget = leads.reduce((sum, l) => sum + l.budget, 0);
   const unreadNotificationsCount = notifications.filter(n => !n.read).length;
+  const availablePropertyAreas = React.useMemo(
+    () => Array.from(new Set(properties.map(property => property.area))).sort(),
+    [properties]
+  );
 
   // Dynamic client budget to target property price ratio trend calculation
   const budgetRatioData = React.useMemo(() => {
@@ -809,20 +1450,22 @@ function CRMContent({
 
   // Render matching properties list per individual client
   const renderPropertyMatches = (lead: Lead) => {
-    // If client budget allows
-    const matched = properties.filter(prop => lead.budget >= prop.price * 0.85); // 15% stretch leeway
+    const profile = selectedLead?.id === lead.id && searchProfileDraft
+      ? searchProfileDraft
+      : buildLeadSearchProfile(lead, properties);
+    const matched = getPropertyMatchResults(lead, properties, profile);
     return (
       <div className="space-y-3">
         {matched.length === 0 ? (
-          <p className="text-xs text-neutral-400 italic">No direct property profiles match this budget scale yet.</p>
+          <p className="text-xs text-neutral-400 italic">No direct property profiles match this search profile yet.</p>
         ) : (
-          matched.map(prop => {
-            const isPerfectMatch = lead.propertyInterestIds.includes(prop.id);
+          matched.map(result => {
+            const prop = result.property;
             return (
               <div 
                 key={prop.id} 
-                className={`p-3 rounded-lg border flex gap-3 items-center ${
-                  isPerfectMatch 
+                className={`p-3 rounded-lg border flex gap-3 items-start ${
+                  result.isPriority 
                     ? 'bg-[#c5a059]/10 border-[#c5a059]/50 text-white' 
                     : 'bg-neutral-900/60 border-neutral-800 text-neutral-300'
                 }`}
@@ -833,17 +1476,35 @@ function CRMContent({
                   className="w-12 h-12 object-cover rounded-md border border-neutral-800"
                 />
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <h5 className="text-xs font-serif font-semibold truncate text-white">{prop.title}</h5>
                     <span className="text-[10px] text-[#c5a059] font-mono font-bold">€{(prop.price/1000000).toFixed(1)}M</span>
                   </div>
                   <p className="text-[10px] text-neutral-400 truncate mt-0.5">{prop.area} • {prop.highlight}</p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {result.reasons.slice(0, 3).map(reason => (
+                      <span key={reason} className="text-[8px] uppercase tracking-wider bg-black/40 border border-neutral-800 text-neutral-400 px-1.5 py-0.5 rounded font-mono">
+                        {reason}
+                      </span>
+                    ))}
+                  </div>
+                  {result.concerns.length > 0 && (
+                    <p className="text-[9px] text-amber-400/80 mt-1 font-mono truncate">
+                      Watch: {result.concerns.join(', ')}
+                    </p>
+                  )}
                 </div>
-                {isPerfectMatch && (
-                  <span className="text-[9px] uppercase tracking-wider bg-[#c5a059]/20 text-[#c5a059] px-2 py-0.5 rounded border border-[#c5a059]/40 font-mono">
-                    PRIORITY
+                <div className="shrink-0 text-right">
+                  <span className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded border font-mono font-bold ${
+                    result.score >= 82
+                      ? 'bg-[#c5a059]/20 text-[#c5a059] border-[#c5a059]/40'
+                      : result.score >= 70
+                        ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+                        : 'bg-neutral-850 text-neutral-400 border-neutral-700'
+                  }`}>
+                    {result.score}% {result.grade}
                   </span>
-                )}
+                </div>
               </div>
             );
           })
@@ -896,12 +1557,19 @@ function CRMContent({
     }
   });
 
+  const outreachActivityTasks = leads.flatMap(lead =>
+    (lead.outreachTasks || []).map(task => ({ lead, task }))
+  ).sort((a, b) => new Date(a.task.dueAt).getTime() - new Date(b.task.dueAt).getTime());
+  const openOutreachTasks = outreachActivityTasks.filter(item => item.task.status === 'open');
+  const overdueOutreachTasks = openOutreachTasks.filter(item => isTaskOverdue(item.task));
+  const nextOutreachTasks = openOutreachTasks.slice(0, 4);
+
   return (
     <div className="w-full min-h-screen bg-[#050505] text-neutral-200 flex flex-col md:flex-row font-sans">
       
       {/* Dynamic alerts/events banner */}
       {alertBanner && (
-        <div className={`fixed top-4 right-4 z-55 max-w-md p-4 rounded-xl border animate-slide-in shadow-2xl flex items-start gap-3 ${
+        <div role="status" aria-live="polite" className={`fixed top-4 right-4 z-55 max-w-md p-4 rounded-xl border animate-slide-in shadow-2xl flex items-start gap-3 ${
           alertBanner.type === 'success' 
             ? 'bg-neutral-950 border-emerald-500/50 text-emerald-300' 
             : 'bg-neutral-950 border-rose-500/50 text-rose-300'
@@ -917,7 +1585,12 @@ function CRMContent({
             </h5>
             <p className="text-xs text-neutral-400 mt-0.5 leading-relaxed">{alertBanner.message}</p>
           </div>
-          <button onClick={() => setAlertBanner(null)} className="text-neutral-500 hover:text-white cursor-pointer select-none">
+          <button
+            type="button"
+            onClick={() => setAlertBanner(null)}
+            aria-label="Dismiss alert"
+            className={`${ICON_TOUCH_CLASS} ${FOCUS_RING_CLASS} inline-flex items-center justify-center rounded-lg text-neutral-500 hover:text-white hover:bg-neutral-900 cursor-pointer select-none`}
+          >
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -933,7 +1606,9 @@ function CRMContent({
             <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500 mt-1">Elite Property CRM</p>
           </div>
           <button 
-            className="md:hidden text-neutral-400 hover:text-white p-1"
+            type="button"
+            aria-label="Close navigation menu"
+            className={`md:hidden ${ICON_TOUCH_CLASS} ${FOCUS_RING_CLASS} inline-flex items-center justify-center rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-900`}
             onClick={() => setMobileMenuOpen(false)}
           >
             <X className="w-5 h-5" />
@@ -947,7 +1622,7 @@ function CRMContent({
             
             <button
               onClick={() => { setActiveTab('dashboard'); onTourTabChange('dashboard'); setMobileMenuOpen(false); }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded transition-all text-left group cursor-pointer ${
+              className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} flex items-center gap-3 px-3 py-2.5 rounded transition-all text-left group cursor-pointer ${
                 activeTab === 'dashboard'
                   ? 'bg-neutral-900 border border-neutral-850 text-[#c5a059]'
                   : 'text-neutral-400 hover:text-white hover:bg-neutral-900/40'
@@ -962,7 +1637,7 @@ function CRMContent({
 
             <button
               onClick={() => { setActiveTab('crm'); onTourTabChange('crm'); setMobileMenuOpen(false); }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded transition-all text-left group cursor-pointer ${
+              className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} flex items-center gap-3 px-3 py-2.5 rounded transition-all text-left group cursor-pointer ${
                 activeTab === 'crm'
                   ? 'bg-neutral-900 border border-neutral-850 text-[#c5a059]'
                   : 'text-neutral-400 hover:text-white hover:bg-neutral-900/40'
@@ -977,7 +1652,7 @@ function CRMContent({
 
             <button
               onClick={() => { setActiveTab('ai-gen'); onTourTabChange('ai-gen'); setMobileMenuOpen(false); }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded transition-all text-left group cursor-pointer ${
+              className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} flex items-center gap-3 px-3 py-2.5 rounded transition-all text-left group cursor-pointer ${
                 activeTab === 'ai-gen'
                   ? 'bg-neutral-900 border border-neutral-850 text-[#c5a059]'
                   : 'text-neutral-400 hover:text-white hover:bg-neutral-900/40'
@@ -992,7 +1667,7 @@ function CRMContent({
 
             <button
               onClick={() => { setActiveTab('analytics'); onTourTabChange('analytics'); setMobileMenuOpen(false); }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded transition-all text-left group cursor-pointer ${
+              className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} flex items-center gap-3 px-3 py-2.5 rounded transition-all text-left group cursor-pointer ${
                 activeTab === 'analytics'
                   ? 'bg-neutral-900 border border-neutral-850 text-[#c5a059]'
                   : 'text-neutral-400 hover:text-white hover:bg-neutral-900/40'
@@ -1007,7 +1682,7 @@ function CRMContent({
 
             <button
               onClick={() => { setActiveTab('team'); onTourTabChange('team'); setMobileMenuOpen(false); }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded transition-all text-left group cursor-pointer ${
+              className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} flex items-center gap-3 px-3 py-2.5 rounded transition-all text-left group cursor-pointer ${
                 activeTab === 'team'
                   ? 'bg-neutral-900 border border-neutral-850 text-[#c5a059]'
                   : 'text-neutral-400 hover:text-white hover:bg-neutral-900/40'
@@ -1025,7 +1700,7 @@ function CRMContent({
           <div className="pt-2 border-t border-neutral-900 pb-2">
             <button
               onClick={initiateTour}
-              className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded transition-all text-left group cursor-pointer text-[#c5a059] bg-[#c5a059]/5 border border-[#c5a059]/20 hover:bg-[#c5a059]/10"
+              className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} flex items-center gap-2.5 px-3 py-2.5 rounded transition-all text-left group cursor-pointer text-[#c5a059] bg-[#c5a059]/5 border border-[#c5a059]/20 hover:bg-[#c5a059]/10`}
               title="Replay Fullscreen Academy Tour"
             >
               <BookOpen className="w-4 h-4 text-[#c5a059] group-hover:scale-110 transition-transform" />
@@ -1059,7 +1734,7 @@ function CRMContent({
                   localStorage.setItem('mallorca_agents_active_member', JSON.stringify(member));
                   showAlert(`Switched session identity to: ${member.name} (${member.role})`, "success");
                 }}
-                className={`w-full p-2 rounded text-left transition-colors flex items-center gap-2 border cursor-pointer ${
+                className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} p-2 rounded text-left transition-colors flex items-center gap-2 border cursor-pointer ${
                   activeMember.id === member.id
                     ? 'bg-[#c5a059]/10 border-[#c5a059]/50 text-[#c5a059]'
                     : 'bg-neutral-950 border-neutral-900 text-neutral-400 hover:text-neutral-200'
@@ -1080,7 +1755,7 @@ function CRMContent({
           </div>
           <button
             onClick={onLogout}
-            className="w-full mt-4 p-2.5 rounded text-left transition-colors flex items-center justify-center gap-2 border bg-rose-950/15 border-rose-900/40 text-rose-400 hover:bg-rose-950/25 hover:text-white cursor-pointer select-none"
+            className={`w-full mt-4 ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} p-2.5 rounded text-left transition-colors flex items-center justify-center gap-2 border bg-rose-950/15 border-rose-900/40 text-rose-400 hover:bg-rose-950/25 hover:text-white cursor-pointer select-none`}
             title="Log out of active partner session"
           >
             <Lock className="w-3.5 h-3.5 text-rose-400 shrink-0" />
@@ -1093,10 +1768,12 @@ function CRMContent({
       <main className="flex-1 flex flex-col min-w-0">
         
         {/* Header - aligns fully with "Sophisticated Dark" mock layout */}
-        <header className="h-20 border-b border-neutral-800/50 flex items-center justify-between px-4 md:px-8 bg-[#050505]">
+        <header className="min-h-20 border-b border-neutral-800/50 flex flex-wrap items-center justify-between gap-3 px-4 md:px-8 py-3 bg-[#050505]">
           <div className="flex items-center gap-2 md:gap-4">
             <button 
-              className="md:hidden text-neutral-400 hover:text-white p-1"
+              type="button"
+              aria-label="Open navigation menu"
+              className={`md:hidden ${ICON_TOUCH_CLASS} ${FOCUS_RING_CLASS} inline-flex items-center justify-center rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-900`}
               onClick={() => setMobileMenuOpen(true)}
             >
               <Menu className="w-6 h-6" />
@@ -1111,7 +1788,7 @@ function CRMContent({
                     setLanguage(lang);
                     showAlert(`Application dictionary translated to ${lang}`, "success");
                   }}
-                  className={`text-[10px] md:text-[11px] px-2.5 py-1 rounded transition-colors font-medium cursor-pointer ${
+                  className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} text-[10px] md:text-[11px] px-2.5 py-1 rounded transition-colors font-medium cursor-pointer ${
                     language === lang 
                       ? 'bg-black border border-neutral-800 text-white' 
                       : 'text-neutral-500 hover:text-neutral-300'
@@ -1127,7 +1804,7 @@ function CRMContent({
             {/* Live syncing status indicator with toggling for offline mode simulation */}
             <button 
               onClick={() => setOfflineMode(!offlineMode)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs cursor-pointer hover:border-neutral-700 transition-colors ${
+              className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs cursor-pointer hover:border-neutral-700 transition-colors ${
                 offlineMode 
                   ? 'bg-amber-950/20 border-amber-900/50 text-amber-400' 
                   : 'bg-emerald-950/20 border-emerald-900/50 text-emerald-400'
@@ -1150,7 +1827,9 @@ function CRMContent({
             <div className="flex gap-2">
               <button 
                 onClick={triggerSync}
-                className="p-2 border border-neutral-800 rounded-full hover:bg-neutral-900 text-neutral-400 hover:text-white transition-colors cursor-pointer"
+                type="button"
+                aria-label="Force synchronize with cloud database"
+                className={`${ICON_TOUCH_CLASS} ${FOCUS_RING_CLASS} inline-flex items-center justify-center p-2 border border-neutral-800 rounded-full hover:bg-neutral-900 text-neutral-400 hover:text-white transition-colors cursor-pointer`}
                 title="Force Synchronize with Cloud DB Node"
               >
                 <RefreshCcw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
@@ -1160,7 +1839,10 @@ function CRMContent({
               <div className="relative">
                 <button 
                   onClick={() => setNotificationOpen(!notificationOpen)}
-                  className="p-2 border border-neutral-800 rounded-full hover:bg-neutral-900 text-neutral-400 hover:text-white transition-colors cursor-pointer relative"
+                  type="button"
+                  aria-label={notificationOpen ? 'Close notifications' : 'Open notifications'}
+                  aria-expanded={notificationOpen}
+                  className={`${ICON_TOUCH_CLASS} ${FOCUS_RING_CLASS} inline-flex items-center justify-center p-2 border border-neutral-800 rounded-full hover:bg-neutral-900 text-neutral-400 hover:text-white transition-colors cursor-pointer relative`}
                 >
                   <Bell className="w-4 h-4" />
                   {unreadNotificationsCount > 0 && (
@@ -1174,7 +1856,7 @@ function CRMContent({
                       <h4 className="text-xs font-bold uppercase tracking-wider text-[#c5a059] font-mono">Real-time alerts</h4>
                       <button 
                         onClick={handleClearNotifications}
-                        className="text-[10px] text-neutral-400 hover:text-white underline cursor-pointer"
+                        className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} text-[10px] text-neutral-400 hover:text-white underline cursor-pointer rounded px-2`}
                       >
                         Mark read
                       </button>
@@ -1904,6 +2586,49 @@ function CRMContent({
                   </div>
                 </div>
 
+                <div className="my-3 bg-black/35 border border-neutral-850 rounded-xl p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Activity className="w-3.5 h-3.5 text-[#c5a059]" />
+                      <span className="text-[10px] uppercase tracking-widest text-neutral-400 font-mono font-bold">Activity Cockpit</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[9px] font-mono">
+                      <span className="px-2 py-0.5 rounded-full border border-neutral-800 text-neutral-300">{openOutreachTasks.length} open</span>
+                      <span className={`px-2 py-0.5 rounded-full border ${overdueOutreachTasks.length ? 'border-rose-500/30 text-rose-300 bg-rose-500/10' : 'border-emerald-500/20 text-emerald-300 bg-emerald-500/10'}`}>
+                        {overdueOutreachTasks.length} overdue
+                      </span>
+                    </div>
+                  </div>
+                  {nextOutreachTasks.length === 0 ? (
+                    <p className="text-[10px] text-neutral-500 leading-relaxed">No open outreach tasks yet. Generate a playbook and mark it sent to create follow-up activities.</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {nextOutreachTasks.map(({ lead, task }) => (
+                        <button
+                          key={`${lead.id}-${task.id}`}
+                          type="button"
+                          onClick={() => {
+                            setSelectedLead(lead);
+                            setSearchProfileDraft(buildLeadSearchProfile(lead, properties));
+                            setOutreachPlanDraft(lead.outreachPlan || null);
+                            setGeneratedFollowUp(lead.outreachPlan?.messageTemplate || '');
+                          }}
+                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} text-left bg-neutral-950/80 hover:bg-neutral-900 border border-neutral-900 hover:border-[#c5a059]/30 rounded-lg px-2.5 py-2 transition-colors`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] text-white font-semibold truncate">{task.title}</span>
+                            <span className={`shrink-0 text-[8px] uppercase border px-1.5 py-0.5 rounded font-mono ${getTaskStatusClass(task)}`}>{getTaskLabel(task)}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 mt-1 text-[9px] text-neutral-500 font-mono">
+                            <span className="truncate">{lead.fullName} · {task.channel}</span>
+                            <span className="text-[#c5a059]">{formatTaskDue(task.dueAt)}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <div className="my-3 flex gap-2">
                   <div className="relative flex-1">
                     <Search className="w-3.5 h-3.5 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -1912,19 +2637,19 @@ function CRMContent({
                       placeholder={t('searchPlaceholder')}
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full bg-black border border-neutral-850 pl-9 pr-3 py-2 rounded-xl text-xs text-neutral-300 focus:outline-none focus:border-neutral-700 placeholder-neutral-600"
+                      className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-850 pl-9 pr-3 py-2 rounded-xl text-xs text-neutral-300 focus:outline-none focus:border-neutral-700 placeholder-neutral-600`}
                     />
                   </div>
                   <div className="w-[145px]">
                     <select
                       value={leadSortCriteria}
                       onChange={(e) => setLeadSortCriteria(e.target.value)}
-                      className="w-full bg-black border border-neutral-850 text-neutral-300 px-2.5 py-2 rounded-xl text-xs focus:outline-none focus:border-[#c5a059]/50 cursor-pointer font-sans"
+                      className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-850 text-neutral-300 px-2.5 py-2 rounded-xl text-xs focus:outline-none focus:border-[#c5a059]/50 cursor-pointer font-sans`}
                     >
-                      <option value="newest">📅 {t('newest')}</option>
-                      <option value="engagement">🔥 {t('engagementScore') || 'Engagement & Activity'}</option>
-                      <option value="budget-desc">💎 {t('budgetHighLow')}</option>
-                      <option value="alphabetical">🔤 {t('alphabetical')}</option>
+                      <option value="newest">{t('newest')}</option>
+                      <option value="engagement">{t('engagementScore') || 'Engagement & Activity'}</option>
+                      <option value="budget-desc">{t('budgetHighLow')}</option>
+                      <option value="alphabetical">{t('alphabetical')}</option>
                     </select>
                   </div>
                 </div>
@@ -1943,7 +2668,7 @@ function CRMContent({
                           setMaxBudgetFilter(20000000);
                           setSearchQuery('');
                         }}
-                        className="mt-4 text-[10px] text-black bg-[#c5a059] hover:bg-white hover:text-black transition-colors px-4 py-2 rounded-lg inline-flex items-center gap-1.5 cursor-pointer font-bold uppercase tracking-wider font-mono shadow-md"
+                        className={`mt-4 ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} text-[10px] text-black bg-[#c5a059] hover:bg-white hover:text-black transition-colors px-4 py-2 rounded-lg inline-flex items-center gap-1.5 cursor-pointer font-bold uppercase tracking-wider font-mono shadow-md`}
                       >
                         Reset All Filters
                       </button>
@@ -1969,7 +2694,9 @@ function CRMContent({
                           key={lead.id}
                           onClick={() => {
                             setSelectedLead(lead);
-                            setGeneratedFollowUp('');
+                            setSearchProfileDraft(buildLeadSearchProfile(lead, properties));
+                            setOutreachPlanDraft(lead.outreachPlan || null);
+                            setGeneratedFollowUp(lead.outreachPlan?.messageTemplate || '');
                           }}
                           className={`p-3.5 rounded-xl border text-left cursor-pointer transition-all duration-200 ease-in-out transform hover:scale-[1.02] ${getStatusBorderClass(lead.status)} ${
                             isSelected 
@@ -2005,7 +2732,8 @@ function CRMContent({
                                         showAlert('Failed to copy to clipboard', 'danger');
                                       });
                                   }}
-                                  className="p-1 rounded text-neutral-500 hover:text-[#c5a059] hover:bg-neutral-800/80 transition-colors cursor-pointer"
+                                  aria-label={`Copy ${lead.fullName} dossier to clipboard`}
+                                  className={`${ICON_TOUCH_CLASS} ${FOCUS_RING_CLASS} inline-flex items-center justify-center rounded text-neutral-500 hover:text-[#c5a059] hover:bg-neutral-800/80 transition-colors cursor-pointer`}
                                   title="Copy Dossier to Clipboard"
                                 >
                                   <Share2 className="w-3 h-3" />
@@ -2073,7 +2801,7 @@ function CRMContent({
                         <select
                           value={selectedLead.status}
                           onChange={(e) => handleUpdateStatus(selectedLead.id, e.target.value)}
-                          className="bg-black border border-neutral-800 rounded text-xs text-neutral-300 p-1.5 focus:outline-none hover:border-neutral-700 cursor-pointer"
+                          className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded text-xs text-neutral-300 p-1.5 focus:outline-none hover:border-neutral-700 cursor-pointer`}
                         >
                           <option value="New">New</option>
                           <option value="Contacted">Contacted</option>
@@ -2086,7 +2814,7 @@ function CRMContent({
                         {/* Restricted purging command */}
                         <button
                           onClick={() => handleDeleteLead(selectedLead.id)}
-                          className="p-1.5 bg-rose-950/20 text-rose-400 border border-rose-900/30 rounded hover:bg-rose-950 hover:text-rose-300 transition-colors cursor-pointer text-xs flex items-center gap-1"
+                          className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} p-1.5 bg-rose-950/20 text-rose-400 border border-rose-900/30 rounded hover:bg-rose-950 hover:text-rose-300 transition-colors cursor-pointer text-xs flex items-center gap-1`}
                           title="Purge buyer ledger (Administrator strict block)"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -2163,7 +2891,7 @@ function CRMContent({
                           <button
                             type="button"
                             onClick={() => { setDossierLead(selectedLead); setShowDossierModal(true); }}
-                            className="w-full mt-4 bg-neutral-900 hover:bg-[#c5a059]/15 text-[11px] font-bold text-[#c5a059] border border-[#c5a059]/20 hover:border-[#c5a059]/40 py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                            className={`w-full mt-4 ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-neutral-900 hover:bg-[#c5a059]/15 text-[11px] font-bold text-[#c5a059] border border-[#c5a059]/20 hover:border-[#c5a059]/40 py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm`}
                           >
                             ✨ Inspect Discovery Origin & Validity
                           </button>
@@ -2177,6 +2905,290 @@ function CRMContent({
                           <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
                         </h4>
                         {renderPropertyMatches(selectedLead)}
+                      </div>
+
+                      {/* Buyer Search Profile / Matching Engine */}
+                      {searchProfileDraft && (
+                        <div className="md:col-span-2 bg-neutral-950 p-4 border border-neutral-850 rounded-xl space-y-4">
+                          {(() => {
+                            const matchResults = getPropertyMatchResults(selectedLead, properties, searchProfileDraft);
+                            const topScore = matchResults[0]?.score || 0;
+                            return (
+                              <>
+                                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                                  <div>
+                                    <h4 className="text-xs uppercase tracking-wider text-white font-mono font-bold flex items-center gap-2">
+                                      <Sliders className="w-3.5 h-3.5 text-[#c5a059]" />
+                                      Buyer Search Profile
+                                    </h4>
+                                    <p className="text-[10px] text-neutral-500 mt-1 max-w-2xl leading-relaxed">
+                                      Structured criteria used to rank the property shortlist before a Deal Room is shared.
+                                    </p>
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-[10px] font-mono font-bold px-2.5 py-1 rounded-full bg-[#c5a059]/10 text-[#c5a059] border border-[#c5a059]/20">
+                                      TOP MATCH {topScore}%
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setSearchProfileDraft(buildLeadSearchProfile({ ...selectedLead, searchProfile: undefined }, properties))}
+                                      className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-neutral-900 text-neutral-200 hover:text-white border border-neutral-800 hover:border-[#c5a059]/50 rounded-lg px-3 py-2 text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1.5`}
+                                    >
+                                      <RefreshCcw className="w-3.5 h-3.5" />
+                                      Auto-fill
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={handleSaveSearchProfile}
+                                      disabled={isSavingSearchProfile}
+                                      className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-[#c5a059] text-black hover:bg-white disabled:opacity-60 rounded-lg px-3 py-2 text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1.5`}
+                                    >
+                                      {isSavingSearchProfile ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                                      Save Profile
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                                  <div className="lg:col-span-2 space-y-3">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                      <label className="space-y-1.5">
+                                        <span className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Target Areas</span>
+                                        <input
+                                          value={searchProfileDraft.targetAreas.join(', ')}
+                                          onChange={(e) => handleSearchProfilePatch({ targetAreas: splitListInput(e.target.value) })}
+                                          placeholder={availablePropertyAreas.slice(0, 4).join(', ') || 'Son Vida, Port dAndratx'}
+                                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-[#c5a059]/60`}
+                                        />
+                                      </label>
+                                      <label className="space-y-1.5">
+                                        <span className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Must-Haves</span>
+                                        <input
+                                          value={searchProfileDraft.mustHaves.join(', ')}
+                                          onChange={(e) => handleSearchProfilePatch({ mustHaves: splitListInput(e.target.value) })}
+                                          placeholder="Privacy, Sea view, Wellness"
+                                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-[#c5a059]/60`}
+                                        />
+                                      </label>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5">
+                                      <label className="space-y-1.5">
+                                        <span className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Min EUR M</span>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="0.5"
+                                          value={(searchProfileDraft.minBudget / 1000000).toFixed(1)}
+                                          onChange={(e) => handleSearchProfilePatch({ minBudget: Number(e.target.value) * 1000000 })}
+                                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-[#c5a059]/60`}
+                                        />
+                                      </label>
+                                      <label className="space-y-1.5">
+                                        <span className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Max EUR M</span>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="0.5"
+                                          value={(searchProfileDraft.maxBudget / 1000000).toFixed(1)}
+                                          onChange={(e) => handleSearchProfilePatch({ maxBudget: Number(e.target.value) * 1000000 })}
+                                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-[#c5a059]/60`}
+                                        />
+                                      </label>
+                                      <label className="space-y-1.5">
+                                        <span className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Beds</span>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          value={searchProfileDraft.minBeds}
+                                          onChange={(e) => handleSearchProfilePatch({ minBeds: Number(e.target.value) })}
+                                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-[#c5a059]/60`}
+                                        />
+                                      </label>
+                                      <label className="space-y-1.5">
+                                        <span className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Baths</span>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          value={searchProfileDraft.minBaths}
+                                          onChange={(e) => handleSearchProfilePatch({ minBaths: Number(e.target.value) })}
+                                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-[#c5a059]/60`}
+                                        />
+                                      </label>
+                                      <label className="space-y-1.5">
+                                        <span className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Min SQM</span>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="50"
+                                          value={searchProfileDraft.minSizeSqM}
+                                          onChange={(e) => handleSearchProfilePatch({ minSizeSqM: Number(e.target.value) })}
+                                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-[#c5a059]/60`}
+                                        />
+                                      </label>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                      <label className="space-y-1.5">
+                                        <span className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Advisor Route</span>
+                                        <input
+                                          value={searchProfileDraft.advisorRoute}
+                                          onChange={(e) => handleSearchProfilePatch({ advisorRoute: e.target.value })}
+                                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-[#c5a059]/60`}
+                                        />
+                                      </label>
+                                      <label className="space-y-1.5">
+                                        <span className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Profile Notes</span>
+                                        <input
+                                          value={searchProfileDraft.profileNotes}
+                                          onChange={(e) => handleSearchProfilePatch({ profileNotes: e.target.value })}
+                                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-[#c5a059]/60`}
+                                        />
+                                      </label>
+                                    </div>
+                                  </div>
+
+                                  <div className="space-y-3">
+                                    <div className="grid grid-cols-2 gap-2.5">
+                                      <label className="space-y-1.5">
+                                        <span className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Privacy</span>
+                                        <select
+                                          value={searchProfileDraft.privacyLevel}
+                                          onChange={(e) => handleSearchProfilePatch({ privacyLevel: e.target.value as LeadSearchProfile['privacyLevel'] })}
+                                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-[#c5a059]/60`}
+                                        >
+                                          <option value="Standard">Standard</option>
+                                          <option value="High">High</option>
+                                          <option value="Ultra">Ultra</option>
+                                        </select>
+                                      </label>
+                                      <label className="space-y-1.5">
+                                        <span className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Window</span>
+                                        <select
+                                          value={searchProfileDraft.purchaseTimeframe}
+                                          onChange={(e) => handleSearchProfilePatch({ purchaseTimeframe: e.target.value as LeadSearchProfile['purchaseTimeframe'] })}
+                                          className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-black border border-neutral-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-[#c5a059]/60`}
+                                        >
+                                          <option value="Immediate">Immediate</option>
+                                          <option value="3-6 months">3-6 months</option>
+                                          <option value="6-12 months">6-12 months</option>
+                                          <option value="Exploratory">Exploratory</option>
+                                        </select>
+                                      </label>
+                                    </div>
+                                    <div className="bg-black/45 border border-neutral-900 rounded-lg p-3 space-y-2">
+                                      <div className="flex items-center justify-between text-[10px] font-mono">
+                                        <span className="text-neutral-500 uppercase tracking-wider">Budget Range</span>
+                                        <span className="text-[#c5a059] font-bold">{formatBudgetRange(searchProfileDraft.minBudget, searchProfileDraft.maxBudget)}</span>
+                                      </div>
+                                      <div className="flex items-center justify-between text-[10px] font-mono">
+                                        <span className="text-neutral-500 uppercase tracking-wider">Qualified Matches</span>
+                                        <span className="text-white font-bold">{matchResults.length}</span>
+                                      </div>
+                                      <div className="w-full bg-neutral-900 h-1.5 rounded-full overflow-hidden">
+                                        <div className="h-full bg-[#c5a059]" style={{ width: `${Math.min(topScore, 100)}%` }} />
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </div>
+                      )}
+
+                      {/* Private Deal Room / Web-Expose */}
+                      <div className="md:col-span-2 bg-neutral-950 p-4 border border-neutral-850 rounded-xl space-y-4">
+                        {(() => {
+                          const dealRoom = selectedLead.dealRoom;
+                          const dealRoomUrl = dealRoom ? (dealRoom.shareUrl || `${window.location.origin}${dealRoom.sharePath}`) : '';
+                          const roomPropertyIds = dealRoom?.selectedPropertyIds?.length ? dealRoom.selectedPropertyIds : selectedLead.propertyInterestIds;
+                          const roomProperties = properties.filter(property => roomPropertyIds.includes(property.id));
+                          const expiresAt = dealRoom?.expiresAt ? new Date(dealRoom.expiresAt).toLocaleDateString() : '14 days after creation';
+                          const ndaLabel = dealRoom?.ndaAcceptedAt ? 'NDA accepted' : 'NDA gate required';
+
+                          return (
+                            <>
+                              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                                <div>
+                                  <h4 className="text-xs uppercase tracking-wider text-white font-mono font-bold flex items-center gap-2">
+                                    <Lock className="w-3.5 h-3.5 text-[#c5a059]" />
+                                    Private Deal Room
+                                  </h4>
+                                  <p className="text-[10px] text-neutral-500 mt-1 max-w-2xl leading-relaxed">
+                                    Web-Expose link with NDA/consent gate, property shortlist, expiry, and view tracking.
+                                  </p>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePrepareDealRoom(selectedLead)}
+                                    disabled={dealRoomWorking}
+                                    className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-[#c5a059] text-black hover:bg-white disabled:opacity-60 rounded-lg px-3.5 py-2 text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1.5`}
+                                  >
+                                    {dealRoomWorking ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <Key className="w-3.5 h-3.5" />}
+                                    {dealRoom ? 'Refresh Room' : 'Create Room'}
+                                  </button>
+                                  {dealRoom && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => copyDealRoomLink(dealRoom)}
+                                        className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-neutral-900 text-neutral-200 hover:text-white border border-neutral-800 hover:border-[#c5a059]/50 rounded-lg px-3.5 py-2 text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1.5`}
+                                      >
+                                        <Share2 className="w-3.5 h-3.5" />
+                                        Copy Link
+                                      </button>
+                                      <a
+                                        href={dealRoomUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-neutral-900 text-neutral-200 hover:text-white border border-neutral-800 hover:border-[#c5a059]/50 rounded-lg px-3.5 py-2 text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1.5`}
+                                      >
+                                        <ExternalLink className="w-3.5 h-3.5" />
+                                        Open
+                                      </a>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+                                <div className="bg-black/45 border border-neutral-900 rounded-lg p-3">
+                                  <span className="text-[9px] uppercase tracking-widest text-neutral-500 block">Status</span>
+                                  <span className={`text-xs font-mono font-bold mt-1 block ${dealRoom ? 'text-emerald-400' : 'text-neutral-400'}`}>
+                                    {dealRoom ? dealRoom.status.toUpperCase() : 'NOT READY'}
+                                  </span>
+                                </div>
+                                <div className="bg-black/45 border border-neutral-900 rounded-lg p-3">
+                                  <span className="text-[9px] uppercase tracking-widest text-neutral-500 block">NDA</span>
+                                  <span className="text-xs font-mono font-bold text-[#c5a059] mt-1 block">{ndaLabel}</span>
+                                </div>
+                                <div className="bg-black/45 border border-neutral-900 rounded-lg p-3">
+                                  <span className="text-[9px] uppercase tracking-widest text-neutral-500 block">Files</span>
+                                  <span className="text-xs font-mono font-bold text-white mt-1 block">{roomProperties.length || 'Auto-match'} listings</span>
+                                </div>
+                                <div className="bg-black/45 border border-neutral-900 rounded-lg p-3">
+                                  <span className="text-[9px] uppercase tracking-widest text-neutral-500 block">Expires</span>
+                                  <span className="text-xs font-mono font-bold text-white mt-1 block">{expiresAt}</span>
+                                </div>
+                              </div>
+
+                              {dealRoom && (
+                                <div className="bg-black/50 border border-neutral-900 rounded-lg p-3 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Private URL</p>
+                                    <p className="text-[11px] text-neutral-300 font-mono truncate select-all mt-1">{dealRoomUrl}</p>
+                                  </div>
+                                  <div className="flex items-center gap-3 text-[10px] text-neutral-500 font-mono shrink-0">
+                                    <span className="inline-flex items-center gap-1"><Eye className="w-3 h-3" /> {dealRoom.viewCount} views</span>
+                                    <span>{roomProperties.map(property => property.area).slice(0, 2).join(' / ') || 'Curated'}</span>
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
 
                       {/* Interactive Client Investment Ratio Trend Line Chart */}
@@ -2253,68 +3265,226 @@ function CRMContent({
 
                     </div>
 
-                    {/* AI AUTOPILOT FOLLOW-UP SYSTEM */}
-                    <div className="bg-neutral-950 border border-neutral-850 rounded-xl p-4 space-y-3.5 relative">
-                      <div className="absolute top-3 right-3 flex items-center gap-1.5">
-                        <span className="text-[9px] bg-indigo-505/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded font-mono font-bold uppercase">
-                          Gemini 3.5 Active
-                        </span>
-                      </div>
-                      
-                      <div>
-                        <h4 className="text-xs text-white uppercase tracking-wider font-bold inline-flex items-center gap-2">
-                          <MessageSquare className="w-4 h-4 text-[#c5a059]" />
-                          Autopilot Follow-Up Generator
-                        </h4>
-                        <p className="text-[10px] text-neutral-400 mt-1">
-                          Synthesize a bespoke off-market outreach template structured perfectly in <strong>{selectedLead.languagePreference === 'DE' ? 'German' : selectedLead.languagePreference === 'ES' ? 'Spanish' : 'English'}</strong>.
-                        </p>
-                      </div>
+                    {/* Outreach Playbook */}
+                    <div className="bg-neutral-950 border border-neutral-850 rounded-xl p-4 space-y-4 relative">
+                      {(() => {
+                        const outreachPlan = outreachPlanDraft || selectedLead.outreachPlan || null;
+                        const outreachMessage = generatedFollowUp || outreachPlan?.messageTemplate || '';
+                        const riskLabel = outreachPlan?.riskLevel || ((selectedLead.socialEngagementScore || 0) >= 90 ? 'Elevated' : 'Standard');
+                        const routeLabel = outreachPlan?.primaryRoute || selectedLead.preferredContactPath || 'Trusted-advisor introduction first.';
 
-                      <div className="flex gap-2.5">
-                        <button
-                          onClick={() => handleAutoFollowUp(selectedLead.id)}
-                          disabled={isGeneratingFollowUp}
-                          className="bg-neutral-905 border border-neutral-800 text-neutral-200 hover:text-white hover:border-[#c5a059] text-xs px-4 py-2 rounded-lg font-medium transition-all inline-flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                        >
-                          {isGeneratingFollowUp ? (
-                            <>
-                              <RefreshCcw className="w-3.5 h-3.5 animate-spin" />
-                              <span>Structuring outreach...</span>
-                            </>
-                          ) : (
-                            <>
-                              <Sparkles className="w-3.5 h-3.5 text-[#c5a059] animate-pulse" />
-                              <span>Generate Bespoke Outreach</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
+                        return (
+                          <>
+                            <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                              <div>
+                                <h4 className="text-xs text-white uppercase tracking-wider font-bold inline-flex items-center gap-2">
+                                  <MessageSquare className="w-4 h-4 text-[#c5a059]" />
+                                  Outreach Playbook
+                                </h4>
+                                <p className="text-[10px] text-neutral-400 mt-1 max-w-2xl leading-relaxed">
+                                  Individual route, tone, sequence, and ready-to-send template in <strong>{selectedLead.languagePreference === 'DE' ? 'German' : selectedLead.languagePreference === 'ES' ? 'Spanish' : 'English'}</strong>.
+                                </p>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className={`text-[9px] border px-2 py-1 rounded-full font-mono font-bold uppercase ${getOutreachRiskClass(riskLabel as LeadOutreachPlan['riskLevel'])}`}>
+                                  {riskLabel}
+                                </span>
+                                <span className={`text-[9px] border px-2 py-1 rounded-full font-mono font-bold uppercase ${getOutreachStatusClass(outreachPlan?.status)}`}>
+                                  {outreachPlan?.status || 'draft'}
+                                </span>
+                                <button
+                                  onClick={() => handleAutoFollowUp(selectedLead.id)}
+                                  disabled={isGeneratingFollowUp}
+                                  className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-neutral-905 border border-neutral-800 text-neutral-200 hover:text-white hover:border-[#c5a059] text-[10px] px-3.5 py-2 rounded-lg font-bold uppercase tracking-wider transition-all inline-flex items-center gap-2 cursor-pointer disabled:opacity-50`}
+                                >
+                                  {isGeneratingFollowUp ? (
+                                    <>
+                                      <RefreshCcw className="w-3.5 h-3.5 animate-spin" />
+                                      <span>Structuring...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Sparkles className="w-3.5 h-3.5 text-[#c5a059] animate-pulse" />
+                                      <span>{outreachPlan ? 'Refresh Playbook' : 'Generate Playbook'}</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            </div>
 
-                      {generatedFollowUp && (
-                        <div className="bg-black/60 border border-[#c5a059]/30 rounded-lg p-3.5 space-y-3.5 animate-fade-in">
-                          <div className="flex justify-between items-center text-[10px] text-neutral-500 uppercase tracking-widest border-b border-neutral-900 pb-2">
-                            <span>Pre-rendered secure Outreach Draft</span>
-                            <span>AES encrypted pipeline</span>
-                          </div>
-                          <p className="text-xs text-neutral-200 leading-relaxed max-h-52 overflow-y-auto whitespace-pre-wrap select-all font-sans bg-black/40 p-2 rounded">
-                            {generatedFollowUp}
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                              <div className="lg:col-span-2 bg-black/45 border border-neutral-900 rounded-lg p-3 space-y-2.5">
+                                <div className="flex items-start gap-2">
+                                  <Shield className="w-3.5 h-3.5 text-[#c5a059] mt-0.5 shrink-0" />
+                                  <div>
+                                    <p className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Primary Route</p>
+                                    <p className="text-xs text-neutral-200 leading-relaxed">{routeLabel}</p>
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-2">
+                                  <div className="border-t border-neutral-900 pt-2">
+                                    <p className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Tone</p>
+                                    <p className="text-xs text-neutral-300 leading-relaxed">{outreachPlan?.toneOfVoice || 'Concise, warm, specific, and quietly premium.'}</p>
+                                  </div>
+                                  <div className="border-t border-neutral-900 pt-2">
+                                    <p className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Opening Angle</p>
+                                    <p className="text-xs text-neutral-300 leading-relaxed">{outreachPlan?.openingAngle || selectedLead.outreachAngle || 'Confidential off-market shortlist with a low-pressure first step.'}</p>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="bg-black/45 border border-neutral-900 rounded-lg p-3 space-y-2">
+                                <p className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Guardrails</p>
+                                {(outreachPlan?.doNotContact || [
+                                  'No generic Instagram DM.',
+                                  'No mass-market property blast.',
+                                  'No sensitive wealth assumptions.'
+                                ]).slice(0, 4).map((item) => (
+                                  <div key={item} className="flex items-start gap-2 text-[10px] text-neutral-300 leading-relaxed">
+                                    <AlertCircle className="w-3 h-3 text-rose-300 mt-0.5 shrink-0" />
+                                    <span>{item}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            {outreachPlan && (
+                              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                                <div className="bg-black/35 border border-neutral-900 rounded-lg p-3 space-y-2.5">
+                                  <p className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Personalization Hooks</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {outreachPlan.personalizationHooks.slice(0, 6).map((hook) => (
+                                      <span key={hook} className="px-2 py-1 rounded bg-neutral-900 border border-neutral-800 text-[10px] text-neutral-300">
+                                        {hook}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                <div className="bg-black/35 border border-neutral-900 rounded-lg p-3 space-y-2.5">
+                                  <p className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">Proof Points</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {outreachPlan.proofPoints.slice(0, 6).map((proof) => (
+                                      <span key={proof} className="px-2 py-1 rounded bg-[#c5a059]/10 border border-[#c5a059]/20 text-[10px] text-[#c5a059]">
+                                        {proof}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {outreachPlan && (
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                                {outreachPlan.sequence.map((step) => (
+                                  <div key={`${step.dayOffset}-${step.channel}`} className="bg-black/35 border border-neutral-900 rounded-lg p-3 space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="text-[10px] font-mono font-bold text-[#c5a059]">{formatOutreachOffset(step.dayOffset)}</span>
+                                      <span className="text-[9px] text-neutral-500 uppercase truncate">{step.channel}</span>
+                                    </div>
+                                    <p className="text-xs text-white font-semibold leading-snug">{step.objective}</p>
+                                    <p className="text-[10px] text-neutral-400 leading-relaxed">{step.action}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {outreachMessage && (
+                              <div className="bg-black/60 border border-[#c5a059]/30 rounded-lg p-3.5 space-y-3.5 animate-fade-in">
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[10px] text-neutral-500 uppercase tracking-widest border-b border-neutral-900 pb-2">
+                                  <span>{outreachPlan?.subjectLine || 'Pre-rendered secure outreach draft'}</span>
+                                  <span>{outreachPlan?.contactPrinciple || 'Permission-based first touch'}</span>
+                                </div>
+                                <p className="text-xs text-neutral-200 leading-relaxed max-h-56 overflow-y-auto whitespace-pre-wrap select-all font-sans bg-black/40 p-2 rounded">
+                                  {outreachMessage}
+                                </p>
+                                <div className="flex flex-wrap justify-end gap-2.5 pt-1">
+                                  <button
+                                    onClick={() => navigator.clipboard?.writeText(outreachMessage).then(() => showAlert('Outreach template copied.', 'success')).catch(() => showAlert('Unable to copy outreach template.', 'danger'))}
+                                    className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} text-neutral-300 hover:text-white border border-neutral-800 hover:border-neutral-700 text-xs px-3.5 py-1.5 rounded font-semibold transition-colors cursor-pointer inline-flex items-center gap-1.5`}
+                                  >
+                                    <Mail className="w-3.5 h-3.5" />
+                                    <span>Copy Template</span>
+                                  </button>
+                                  <button
+                                    onClick={() => handleSimulateDispatch(selectedLead)}
+                                    disabled={!outreachPlan || outreachPlan.status === 'sent' || isDispatchingOutreach}
+                                    className={`${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-[#c5a059] text-black hover:bg-white disabled:opacity-50 disabled:hover:bg-[#c5a059] text-xs px-3.5 py-1.5 rounded font-semibold transition-colors cursor-pointer inline-flex items-center gap-1.5`}
+                                  >
+                                    {isDispatchingOutreach ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                                    <span>{outreachPlan?.status === 'sent' ? 'Sent' : 'Mark Sent'}</span>
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Outreach Activity Tasks */}
+                    <div className="bg-neutral-950 border border-neutral-850 rounded-xl p-4 space-y-4">
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                        <div>
+                          <h4 className="text-xs uppercase tracking-wider text-white font-mono font-bold flex items-center gap-2">
+                            <Activity className="w-3.5 h-3.5 text-[#c5a059]" />
+                            Outreach Activity Tasks
+                          </h4>
+                          <p className="text-[10px] text-neutral-500 mt-1 max-w-2xl leading-relaxed">
+                            Follow-up activities created from the approved outreach sequence, with due dates and owner accountability.
                           </p>
-                          <div className="flex justify-end gap-2.5 pt-1">
-                            <button
-                              onClick={() => setGeneratedFollowUp('')}
-                              className="text-neutral-500 hover:text-white text-xs select-none cursor-pointer"
-                            >
-                              Discard
-                            </button>
-                            <button
-                              onClick={() => handleSimulateDispatch(selectedLead)}
-                              className="bg-[#c5a059] text-black hover:bg-white text-xs px-3.5 py-1.5 rounded font-semibold transition-colors cursor-pointer inline-flex items-center gap-1.5"
-                            >
-                              <CheckCircle className="w-3.5 h-3.5" />
-                              <span>Dispatch to Client</span>
-                            </button>
-                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[9px] font-mono">
+                          <span className="px-2 py-1 rounded-full border border-neutral-800 text-neutral-300">
+                            {(selectedLead.outreachTasks || []).filter(task => task.status === 'open').length} open
+                          </span>
+                          <span className="px-2 py-1 rounded-full border border-emerald-500/20 text-emerald-300 bg-emerald-500/10">
+                            {(selectedLead.outreachTasks || []).filter(task => task.status === 'done').length} done
+                          </span>
+                        </div>
+                      </div>
+
+                      {(selectedLead.outreachTasks || []).length === 0 ? (
+                        <div className="bg-black/35 border border-dashed border-neutral-800 rounded-lg p-4 text-center">
+                          <p className="text-xs text-neutral-500">No activity tasks yet. Generate a playbook, then mark the outreach sent.</p>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-2.5">
+                          {[...(selectedLead.outreachTasks || [])]
+                            .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime())
+                            .map((task) => (
+                              <div key={task.id} className="bg-black/40 border border-neutral-900 rounded-lg p-3 space-y-3">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="text-[9px] uppercase tracking-widest text-neutral-500 font-mono">{formatTaskDue(task.dueAt)}</p>
+                                    <h5 className="text-xs text-white font-semibold leading-snug mt-1">{task.title}</h5>
+                                  </div>
+                                  <span className={`shrink-0 text-[8px] uppercase border px-1.5 py-0.5 rounded font-mono ${getTaskStatusClass(task)}`}>
+                                    {getTaskLabel(task)}
+                                  </span>
+                                </div>
+                                <div className="space-y-1.5 text-[10px] text-neutral-400 leading-relaxed">
+                                  <p><span className="text-neutral-600 uppercase font-mono">Channel:</span> {task.channel}</p>
+                                  <p><span className="text-neutral-600 uppercase font-mono">Owner:</span> {task.owner}</p>
+                                  <p>{task.notes}</p>
+                                </div>
+                                {task.status === 'open' ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCompleteOutreachTask(selectedLead, task)}
+                                    disabled={taskActionId === task.id}
+                                    className={`w-full ${TOUCH_TARGET_CLASS} ${FOCUS_RING_CLASS} bg-neutral-900 text-neutral-200 hover:text-white border border-neutral-800 hover:border-emerald-500/40 disabled:opacity-50 rounded-lg px-3 py-2 text-[10px] font-bold uppercase tracking-wider inline-flex items-center justify-center gap-1.5`}
+                                  >
+                                    {taskActionId === task.id ? <RefreshCcw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5 text-emerald-300" />}
+                                    Complete Task
+                                  </button>
+                                ) : (
+                                  <div className="text-[9px] text-emerald-300 font-mono border-t border-neutral-900 pt-2">
+                                    Completed {task.completedAt ? formatTaskDue(task.completedAt) : ''} by {task.completedBy || 'team'}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
                         </div>
                       )}
                     </div>
@@ -2392,6 +3562,28 @@ function CRMContent({
                     </div>
 
                     <div className="space-y-2">
+                      <label className="text-[10px] uppercase font-bold text-neutral-400 block font-mono">Discovery Mode</label>
+                      <select
+                        value={agentSearchMode}
+                        onChange={(e) => {
+                          const nextMode = e.target.value as 'social' | 'web';
+                          setAgentSearchMode(nextMode);
+                          if (autopilotActive) {
+                            fetch('/api/ai/autopilot/config', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ searchMode: nextMode })
+                            });
+                          }
+                        }}
+                        className="w-full bg-black border border-neutral-800 text-xs text-white p-2.5 rounded focus:outline-none focus:border-neutral-700 font-mono"
+                      >
+                        <option value="web">Live Web Grounding: public signals and citations</option>
+                        <option value="social">Simulated Social Stream: campaign persona testing</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-2">
                       <label className="text-[10px] uppercase font-bold text-neutral-400 block font-mono">Lead Source Platform / Forum</label>
                       <select
                         value={selectedScrapePlatform}
@@ -2407,9 +3599,15 @@ function CRMContent({
                         }}
                         className="w-full bg-black border border-neutral-800 text-xs text-white p-2.5 rounded focus:outline-none focus:border-neutral-700 font-mono"
                       >
+                        <option value="Family offices, yacht clubs, liquidity events, and Balearic luxury advisors">Family offices + Balearic advisor network</option>
                         <option value="LinkedIn Executive Mallorca Group">LinkedIn Mallorca Executive HNW Network</option>
-                        <option value="German Yacht Owners Forum">Superyacht Registry & Port d'Andratx Club Inbounds</option>
-                        <option value="European Tech IPO & Liquidity trackers">European Tech IPO & Liquidity News</option>
+                        <option value="Superyacht Registry, Marina Ibiza, Port Adriano, and Port d'Andratx networks">Superyacht Registry + Marina Networks</option>
+                        <option value="European Tech IPO, acquisition, and founder liquidity trackers">European Tech IPO + Founder Liquidity News</option>
+                        <option value="Private aviation FBO, aircraft manager, and executive assistant channels">Private Aviation + FBO Signals</option>
+                        <option value="Sports agents, athlete family offices, academies, and foundations">Athlete Representatives + Foundations</option>
+                        <option value="Art fair, auction house, gallery principal, and collector advisor circles">Art Collectors + Auction Circles</option>
+                        <option value="Luxury hotel, branded residence, and hospitality investment news">Hospitality Investors + Branded Residences</option>
+                        <option value="Monaco, Zurich, London, and Madrid private banking introductions">Private Banking Introduction Network</option>
                         <option value="Off-Market Luxury Real Estate Forums">Off-Market Luxury Real Estate Forums</option>
                       </select>
                       
@@ -2449,10 +3647,18 @@ function CRMContent({
                         }}
                         className="w-full bg-black border border-neutral-800 text-xs text-white p-2.5 rounded focus:outline-none focus:border-neutral-700 font-mono"
                       >
+                        <option value="Post-liquidity founders, yacht owners, athletes, and family offices seeking Mallorca or Ibiza privacy estates">Balanced HNW Mallorca/Ibiza buyer matrix</option>
                         <option value="German Yacht Owners & Son Vida Villa Seekers">German Yacht Owners & Son Vida Villa Seekers</option>
+                        <option value="DACH post-exit healthtech and biotech founders seeking Son Vida privacy">DACH HealthTech/Biotech Exit Founders</option>
+                        <option value="Nordic SaaS founders seeking Ibiza smart villas and media-ready estates">Nordic SaaS Founders Seeking Ibiza</option>
                         <option value="London Tech Founders Seeking Port Andratx waterfronts">London Tech Founders Seeking Port Andratx</option>
                         <option value="Swiss Private Bank Executives seeking absolute mountains privacy">Swiss Executives Seeking Tramuntana Privacy</option>
+                        <option value="Monaco superyacht owners comparing Port Andratx, Port Adriano, and Marina Ibiza">Monaco Superyacht Owners</option>
+                        <option value="Elite athlete representatives seeking private training and recovery compounds">Elite Athlete Recovery Compounds</option>
+                        <option value="Contemporary art collectors seeking historic Palma palaces or Deia estates">Art Collectors Seeking Palma/Deia</option>
                         <option value="Madrid Corporate Real Estate investors seeking Mallorca hotels">Madrid Corporate Real Estate Investors</option>
+                        <option value="Hospitality investors seeking branded residences and boutique hotel conversions in Ibiza">Ibiza Hospitality Investors</option>
+                        <option value="Private aviation users needing secure 25-minute airport-to-villa transfer">Private Aviation Fast-Transfer Buyers</option>
                       </select>
                       
                       <div className="pt-1 font-mono">
@@ -2536,6 +3742,16 @@ function CRMContent({
                             </span>
                             <h4 className="text-sm font-bold text-white font-serif">{lastScrapedLead.fullName}</h4>
                             <p className="text-neutral-300 font-serif italic text-[11px] leading-relaxed">"{lastScrapedLead.notes}"</p>
+                            {(lastScrapedLead.preferredContactPath || lastScrapedLead.outreachAngle) && (
+                              <div className="bg-neutral-950/80 border border-neutral-850 rounded-lg p-2.5 text-[10px] font-mono text-neutral-400 space-y-1">
+                                {lastScrapedLead.preferredContactPath && (
+                                  <p><span className="text-neutral-500">ROUTE:</span> {lastScrapedLead.preferredContactPath}</p>
+                                )}
+                                {lastScrapedLead.outreachAngle && (
+                                  <p><span className="text-neutral-500">ANGLE:</span> {lastScrapedLead.outreachAngle}</p>
+                                )}
+                              </div>
+                            )}
                             
                             <div className="grid grid-cols-2 gap-3 text-[10px] font-mono pt-2.5 text-neutral-400 border-t border-neutral-850">
                               <div>
@@ -2643,13 +3859,13 @@ function CRMContent({
                     <div className="space-y-2">
                       <div className="flex justify-between items-center">
                         <label className="text-[10px] uppercase font-bold text-neutral-400 block font-mono">Scouting Cycle Speed</label>
-                        <span className="text-[11px] font-mono text-[#c5a059] font-bold">Every {agentScanInterval} seconds</span>
+                        <span className="text-[11px] font-mono text-[#c5a059] font-bold">Every {formatScanInterval(agentScanInterval)}</span>
                       </div>
                       <input
                         type="range"
-                        min="15"
-                        max="300"
-                        step="15"
+                        min={MIN_AGENT_SCAN_INTERVAL_SECONDS}
+                        max={MAX_AGENT_SCAN_INTERVAL_SECONDS}
+                        step="900"
                         value={agentScanInterval}
                         disabled={autopilotActive}
                         onChange={(e) => {
@@ -2660,8 +3876,8 @@ function CRMContent({
                         className="w-full h-1 bg-neutral-900 border-none outline-none rounded-lg appearance-none cursor-pointer accent-[#c5a059] disabled:opacity-40"
                       />
                       <div className="flex justify-between text-[8px] font-mono text-neutral-600 uppercase">
-                        <span>15s (Demo)</span>
-                        <span>300s (Production)</span>
+                        <span>30m minimum</span>
+                        <span>2h max</span>
                       </div>
                     </div>
 
@@ -2686,7 +3902,7 @@ function CRMContent({
                       <div className="flex justify-between items-center text-xs font-mono">
                         <span className="text-neutral-500">Next Search Attempt:</span>
                         <span className={`font-bold transition-all ${autopilotActive ? 'text-amber-400 animate-pulse' : 'text-neutral-500'}`}>
-                          {autopilotActive ? `${agentCountdown}s countdown` : 'PAUSED'}
+                          {autopilotActive ? `${formatScanInterval(agentCountdown)} countdown` : 'PAUSED'}
                         </span>
                       </div>
                       <div className="mt-2 w-full bg-neutral-900 h-1.5 rounded-full overflow-hidden">
@@ -3339,6 +4555,10 @@ function MainAppWrapper() {
     }
     setShowTour(false);
   };
+
+  if (window.location.pathname.startsWith('/deal/')) {
+    return <PublicDealRoomView />;
+  }
 
   if (!activeMember) {
     return <LuxuryLogin team={team} onLoginSuccess={handleLoginSuccess} />;

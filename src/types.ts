@@ -21,6 +21,93 @@ export interface MallorcaProperty {
   description: string;
 }
 
+export interface DealRoom {
+  id: string;
+  status: 'draft' | 'active' | 'expired';
+  accessToken: string;
+  sharePath: string;
+  shareUrl?: string;
+  ndaRequired: boolean;
+  ndaAcceptedAt?: string;
+  consentCapturedAt?: string;
+  selectedPropertyIds: string[];
+  privateNote: string;
+  createdAt: string;
+  lastSharedAt: string;
+  lastViewedAt?: string;
+  expiresAt: string;
+  viewCount: number;
+}
+
+export type PrivacyLevel = 'Standard' | 'High' | 'Ultra';
+export type PurchaseTimeframe = 'Immediate' | '3-6 months' | '6-12 months' | 'Exploratory';
+
+export interface LeadSearchProfile {
+  targetAreas: string[];
+  mustHaves: string[];
+  minBudget: number;
+  maxBudget: number;
+  minBeds: number;
+  minBaths: number;
+  minSizeSqM: number;
+  privacyLevel: PrivacyLevel;
+  purchaseTimeframe: PurchaseTimeframe;
+  advisorRoute: string;
+  profileNotes: string;
+  updatedAt?: string;
+}
+
+export type OutreachRiskLevel = 'Standard' | 'Elevated' | 'VIP';
+export type OutreachPlanStatus = 'draft' | 'reviewed' | 'sent';
+
+export interface OutreachStep {
+  dayOffset: number;
+  channel: string;
+  objective: string;
+  action: string;
+}
+
+export interface LeadOutreachPlan {
+  id: string;
+  status: OutreachPlanStatus;
+  riskLevel: OutreachRiskLevel;
+  primaryRoute: string;
+  contactPrinciple: string;
+  toneOfVoice: string;
+  openingAngle: string;
+  subjectLine: string;
+  messageTemplate: string;
+  personalizationHooks: string[];
+  proofPoints: string[];
+  doNotContact: string[];
+  complianceNotes: string[];
+  sequence: OutreachStep[];
+  generatedAt: string;
+  lastReviewedAt?: string;
+  sentAt?: string;
+}
+
+export type LeadTaskStatus = 'open' | 'done' | 'blocked';
+export type LeadTaskPriority = 'Normal' | 'High' | 'Critical';
+export type LeadTaskSource = 'outreach_sequence' | 'manual';
+
+export interface LeadTask {
+  id: string;
+  playbookId?: string;
+  title: string;
+  channel: string;
+  dueAt: string;
+  owner: string;
+  status: LeadTaskStatus;
+  priority: LeadTaskPriority;
+  source: LeadTaskSource;
+  dayOffset?: number;
+  notes: string;
+  createdAt: string;
+  completedAt?: string;
+  completedBy?: string;
+}
+
 export type LeadStatus = 'New' | 'Contacted' | 'Showing Scheduled' | 'Offer Pending' | 'Closed Won' | 'Cold';
 export type InterestLevel = 'High' | 'Medium' | 'Low';
 
@@ -51,6 +138,14 @@ export interface Lead {
   socialHandle?: string;
   socialEngagementScore?: number;
   lastActive?: string;
+  preferredContactPath?: string;
+  outreachAngle?: string;
+  buyerSegment?: string;
+  identityKey?: string;
+  dealRoom?: DealRoom;
+  searchProfile?: LeadSearchProfile;
+  outreachPlan?: LeadOutreachPlan;
+  outreachTasks?: LeadTask[];
   timeline: TimelineEvent[];
 }
 
